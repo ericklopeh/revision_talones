@@ -293,7 +293,9 @@ def subir_revision_a_graph(
     cliente_file = sanitize_remote_name(nombre_cliente).replace(" ", "_")
     promotor_file = sanitize_remote_name(promotor).replace(" ", "_")
 
-    pdf_name = f"TALON_{cliente_file}_{rfc}.pdf"
+    extension_origen = Path(ruta_pdf).suffix.lower() or ".pdf"
+
+    pdf_name = f"TALON_{cliente_file}_{rfc}{extension_origen}"
     excel_name = f"REVISION_{cliente_file}_{promotor_file}.xlsx"
 
     pdf_result = upload_small_file(

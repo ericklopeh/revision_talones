@@ -1,6 +1,13 @@
 import re
 import fitz
 
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_DISPONIBLE = True
+except Exception:
+    OCR_DISPONIBLE = False
+
 
 def convertir_importe(valor: str) -> float:
     if not valor:
@@ -414,3 +421,58 @@ def extraer_datos_talon(ruta_pdf: str) -> dict:
     }
 
     return datos
+
+
+def extraer_texto_imagen(ruta_imagen: str) -> str:
+    """
+    Extrae texto de una imagen (JPG/PNG) usando OCR con Tesseract.
+    Requiere tener instalado el motor Tesseract (en Streamlit Cloud
+    se instala con packages.txt).
+    """
+
+    if not OCR_DISPONIBLE:
+        raise RuntimeError(
+            "OCR no disponible: falta instalar 'pytesseract' y 'pillow', "
+            "y el motor Tesseract (tesseract-ocr) en el sistema."
+        )
+
+    imagen = Image.open(ruta_imagen)
+
+    try:
+        return pytesseract.image_to_string(imagen, lang="spa")
+    except pytesseract.TesseractError:
+        return pytesseract.image_to_string(imagen)
+
+
+def extraer_datos_talon_desde_texto(texto: str) -> dict:
+    """
+    Construye los datos del talón a partir de texto plano (por ejemplo,
+    el texto obtenido por OCR de una imagen). No usa posición visual,
+    porque una imagen no tiene coordenadas como el PDF.
+    """
+
+    resumen = extraer_resumen_nomina(texto)
+    codigos = extraer_codigos_por_texto(texto)
+
+    datos = {
+        "nombre": extraer_nombre_desde_texto(texto),
+        "rfc": extraer_rfc(texto),
+        "fecha_pago": resumen["fecha_pago"],
+        "percepciones": resumen["percepciones"],
+        "descuentos": resumen["descuentos"],
+        "liquido": resumen["liquido"],
+        "codigos": codigos,
+        "texto_original": texto
+    }
+
+    return datos
+
+
+def extraer_datos_talon_imagen(ruta_imagen: str) -> dict:
+    """
+    Lee una imagen de talón (JPG/PNG) mediante OCR y devuelve los datos
+    en el mismo formato que extraer_datos_talon.
+    """
+
+    texto = extraer_texto_imagen(ruta_imagen)
+    return extraer_datos_talon_desde_texto(texto)

@@ -2,7 +2,7 @@ import streamlit as st
 from pathlib import Path
 from datetime import datetime
 
-from services.extractor_pdf import extraer_datos_talon
+from services.extractor_pdf import extraer_datos_talon, extraer_datos_talon_imagen
 from services.calculadora import calcular_revision_talon
 from services.generador_excel import generar_excel_revision
 from services.graph_storage import subir_revision_a_graph, GraphStorageError
@@ -18,8 +18,8 @@ st.title("📄 Revisión de Talones")
 st.caption("Sistema para leer talón, calcular liquidez, generar mensaje y crear Excel de revisión.")
 
 archivo_pdf = st.file_uploader(
-    "Sube un talón en PDF",
-    type=["pdf"]
+    "Sube un talón en PDF o imagen (JPG/PNG)",
+    type=["pdf", "jpg", "jpeg", "png"]
 )
 
 
@@ -78,9 +78,25 @@ if archivo_pdf:
     with open(ruta_pdf, "wb") as archivo:
         archivo.write(archivo_pdf.getbuffer())
 
-    datos = extraer_datos_talon(str(ruta_pdf))
+    es_imagen = ruta_pdf.suffix.lower() in [".jpg", ".jpeg", ".png"]
 
-    st.success("Talón leído correctamente.")
+    try:
+        if es_imagen:
+            datos = extraer_datos_talon_imagen(str(ruta_pdf))
+        else:
+            datos = extraer_datos_talon(str(ruta_pdf))
+    except RuntimeError as error:
+        st.error(
+            "No se pudo leer la imagen por OCR. "
+            "Verifica que Tesseract esté disponible en el entorno."
+        )
+        st.exception(error)
+        st.stop()
+
+    if es_imagen:
+        st.success("Imagen leída por OCR. Revisa los datos detectados antes de generar el Excel.")
+    else:
+        st.success("Talón leído correctamente.")
 
     # =========================
     # DATOS DEL TALÓN
