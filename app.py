@@ -39,12 +39,12 @@ def generar_resultado_liquidez(revision: dict, tiene_programado: str) -> str:
 
     if liquidez_final < 0 and tiene_programado == "Sí" and programado > 0:
         return (
-            f"Tiene un sobregiro de {formato_moneda(liquidez_final)}. "
+            f"No tiene liquidez. Tiene un sobregiro de: {formato_moneda(liquidez_final)}. "
             f"Tiene un programado por {formato_moneda(programado)}."
         )
 
     if liquidez_final < 0:
-        return f"Tiene un sobregiro de {formato_moneda(liquidez_final)}."
+        return f"No tiene liquidez. Tiene un sobregiro de: {formato_moneda(liquidez_final)}."
 
     return "No tiene liquidez disponible."
 
