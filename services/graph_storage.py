@@ -16,12 +16,35 @@ class GraphStorageError(Exception):
     pass
 
 
-def get_env_required(name: str) -> str:
+def get_config_value(name: str, default=None):
+    """
+    Obtiene una variable de configuración.
+    Prioriza st.secrets (Streamlit Cloud) y, si no existe, usa el .env local.
+    """
+    try:
+        import streamlit as st
+
+        if name in st.secrets:
+            value = st.secrets[name]
+            if value is not None and str(value).strip() != "":
+                return str(value)
+    except Exception:
+        pass
+
     value = os.getenv(name)
+
+    if value is None or str(value).strip() == "":
+        return default
+
+    return value
+
+
+def get_env_required(name: str) -> str:
+    value = get_config_value(name)
 
     if not value:
         raise GraphStorageError(
-            f"Falta configurar la variable {name} en el archivo .env"
+            f"Falta configurar la variable {name} en el archivo .env o en los Secrets de Streamlit"
         )
 
     return value
@@ -83,7 +106,7 @@ def get_site_id() -> str:
 
 
 def get_drive_id(site_id: str) -> str:
-    drive_name = os.getenv("MS_DRIVE_NAME", "").strip()
+    drive_name = (get_config_value("MS_DRIVE_NAME", "") or "").strip()
 
     url = f"{GRAPH_BASE_URL}/sites/{site_id}/drives"
 
