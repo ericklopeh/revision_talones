@@ -120,7 +120,8 @@ if archivo_pdf:
                 "Leonardo Arevalo",
                 "Eliezer Chipuli",
                 "Gerardo Santana",
-                "Sergio Valadez"
+                "Sergio Valadez",
+                "Sergio Vazquez"
             ]
         )
 
