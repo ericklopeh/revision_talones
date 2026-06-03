@@ -342,6 +342,17 @@ if archivo_pdf:
 
     st.subheader("Mensaje para vendedor")
 
+    mensaje_html = mensaje.replace("\n", "<br>")
+
+    st.markdown(
+        f"""
+        <div style="font-size:1.25rem; font-weight:700; line-height:1.7;">
+        {mensaje_html}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     st.text_area(
         "Texto formal para copiar y enviar",
         value=mensaje,
