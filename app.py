@@ -22,6 +22,10 @@ archivo_pdf = st.file_uploader(
     type=["pdf", "jpg", "jpeg", "png"]
 )
 
+modo_manual = st.checkbox(
+    "Captura manual (sin subir archivo o si no se detectó bien el talón)"
+)
+
 
 def formato_moneda(valor: float) -> str:
     if valor < 0:
@@ -69,10 +73,13 @@ Resultado de la revisión:
     return texto
 
 
-if archivo_pdf:
-    Path("uploads").mkdir(exist_ok=True)
-    Path("output").mkdir(exist_ok=True)
+Path("uploads").mkdir(exist_ok=True)
+Path("output").mkdir(exist_ok=True)
 
+datos = None
+ruta_pdf = None
+
+if archivo_pdf:
     ruta_pdf = Path("uploads") / archivo_pdf.name
 
     with open(ruta_pdf, "wb") as archivo:
@@ -94,37 +101,82 @@ if archivo_pdf:
         st.stop()
 
     if es_imagen:
-        st.success("Imagen leída por OCR. Revisa los datos detectados antes de generar el Excel.")
+        st.success("Imagen leída por OCR. Revisa y corrige los datos antes de generar el Excel.")
     else:
-        st.success("Talón leído correctamente.")
+        st.success("Talón leído correctamente. Puedes corregir cualquier dato antes de generar el Excel.")
 
+elif modo_manual:
+    datos = {
+        "nombre": "",
+        "rfc": "",
+        "fecha_pago": "",
+        "percepciones": 0.0,
+        "descuentos": 0.0,
+        "liquido": 0.0,
+        "codigos": {},
+        "texto_original": ""
+    }
+    st.info("Captura manual activada. Llena los campos a mano.")
+
+
+if datos is not None:
     # =========================
-    # DATOS DEL TALÓN
+    # DATOS DEL TALÓN (EDITABLES)
     # =========================
 
-    st.subheader("Datos del talón")
+    st.subheader("Datos del talón (editables)")
+    st.caption(
+        "Los valores se precargan con lo detectado. "
+        "Corrige lo que haga falta; el cálculo se actualiza al instante."
+    )
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("Nombre", datos["nombre"])
+        nombre = st.text_input("Nombre", value=datos["nombre"])
 
     with col2:
-        st.metric("RFC", datos["rfc"])
+        rfc = st.text_input("RFC", value=datos["rfc"])
 
     with col3:
-        st.metric("Líquido talón", formato_moneda(datos["liquido"]))
+        fecha_pago = st.text_input("Fecha talón", value=datos.get("fecha_pago", ""))
 
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        st.metric("Percepciones talón", formato_moneda(datos["percepciones"]))
+        percepciones = st.number_input(
+            "Percepciones talón",
+            value=float(datos["percepciones"]),
+            step=100.0,
+            format="%.2f"
+        )
 
     with col5:
-        st.metric("Descuentos talón", formato_moneda(datos["descuentos"]))
+        descuentos = st.number_input(
+            "Descuentos talón",
+            value=float(datos["descuentos"]),
+            step=100.0,
+            format="%.2f"
+        )
 
     with col6:
-        st.metric("Fecha talón", datos.get("fecha_pago", ""))
+        liquido = st.number_input(
+            "Líquido talón",
+            value=float(datos["liquido"]),
+            step=100.0,
+            format="%.2f"
+        )
+
+    datos_editados = {
+        "nombre": nombre,
+        "rfc": rfc,
+        "fecha_pago": fecha_pago,
+        "percepciones": percepciones,
+        "descuentos": descuentos,
+        "liquido": liquido,
+        "codigos": datos["codigos"],
+        "texto_original": datos.get("texto_original", "")
+    }
 
     st.divider()
 
@@ -212,12 +264,64 @@ if archivo_pdf:
             )
 
     # =========================
+    # IMPORTES POR CÓDIGO (EDITABLES)
+    # =========================
+
+    st.subheader("Importes por código (editables)")
+    st.caption(
+        "Se precargan con lo detectado. Corrige o captura los importes a mano "
+        "si la lectura falló."
+    )
+
+    codigos_formato = [
+        ("E4", ""),
+        ("E3", ""),
+        ("Q", "A2"),
+        ("CP", ""),
+        ("7", "07"),
+        ("CT", "CT"),
+        ("7B", ""),
+        ("E9", ""),
+        ("SG", "SG"),
+        ("O1", "01"),
+        ("DC", "DC")
+    ]
+
+    def importe_detectado(cod: str, equiv: str) -> float:
+        codigos = datos["codigos"]
+
+        if cod in codigos:
+            return float(codigos[cod]["importe"])
+
+        if equiv and equiv in codigos:
+            return float(codigos[equiv]["importe"])
+
+        return 0.0
+
+    codigos_manual = {}
+    columnas_codigos = st.columns(4)
+
+    for indice, (cod, equiv) in enumerate(codigos_formato):
+        with columnas_codigos[indice % 4]:
+            etiqueta = cod + (f" (PDF: {equiv})" if equiv else "")
+            valor = st.number_input(
+                etiqueta,
+                value=importe_detectado(cod, equiv),
+                step=100.0,
+                format="%.2f",
+                key=f"codigo_{cod}"
+            )
+            codigos_manual[cod] = {"descripcion": "manual", "importe": valor}
+
+    st.divider()
+
+    # =========================
     # CÁLCULO
     # =========================
 
     revision = calcular_revision_talon(
-        codigos_extraidos=datos["codigos"],
-        descuentos_talon=datos["descuentos"],
+        codigos_extraidos=codigos_manual,
+        descuentos_talon=descuentos,
         abono_extra=abono_extra,
         programado=programado
     )
@@ -228,7 +332,7 @@ if archivo_pdf:
     )
 
     mensaje = generar_mensaje_vendedor(
-        datos=datos,
+        datos=datos_editados,
         revision=revision,
         tiene_programado=tiene_programado
     )
@@ -384,9 +488,13 @@ if archivo_pdf:
     st.subheader("Generar Excel de revisión")
 
     if st.button("Generar Excel", type="primary"):
+        if not datos_editados["nombre"].strip() or not datos_editados["rfc"].strip():
+            st.error("Captura al menos el Nombre y el RFC antes de generar el Excel.")
+            st.stop()
+
         try:
             ruta_excel = generar_excel_revision(
-                datos=datos,
+                datos=datos_editados,
                 revision=revision,
                 mensaje_vendedor=mensaje,
                 promotor=promotor,
@@ -405,13 +513,13 @@ if archivo_pdf:
 
             try:
                 resultado_graph = subir_revision_a_graph(
-                    ruta_pdf=str(ruta_pdf),
+                    ruta_pdf=str(ruta_pdf) if ruta_pdf else None,
                     ruta_excel=ruta_excel,
                     anio=int(anio),
                     semana=int(semana),
                     promotor=promotor,
-                    nombre_cliente=datos["nombre"],
-                    rfc=datos["rfc"]
+                    nombre_cliente=datos_editados["nombre"],
+                    rfc=datos_editados["rfc"]
                 )
 
                 st.success("Archivos subidos correctamente a OneDrive/SharePoint.")
@@ -461,4 +569,4 @@ if archivo_pdf:
         st.text(datos["texto_original"])
 
 else:
-    st.info("Sube un talón en PDF para comenzar.")
+    st.info("Sube un talón (PDF o imagen) o activa la captura manual para comenzar.")

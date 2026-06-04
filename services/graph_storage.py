@@ -293,18 +293,23 @@ def subir_revision_a_graph(
     cliente_file = sanitize_remote_name(nombre_cliente).replace(" ", "_")
     promotor_file = sanitize_remote_name(promotor).replace(" ", "_")
 
-    extension_origen = Path(ruta_pdf).suffix.lower() or ".pdf"
-
-    pdf_name = f"TALON_{cliente_file}_{rfc}{extension_origen}"
     excel_name = f"REVISION_{cliente_file}_{promotor_file}.xlsx"
 
-    pdf_result = upload_small_file(
-        site_id=site_id,
-        drive_id=drive_id,
-        remote_folder_path=remote_folder_path,
-        local_file_path=ruta_pdf,
-        remote_file_name=pdf_name
-    )
+    pdf_web_url = None
+
+    if ruta_pdf:
+        extension_origen = Path(ruta_pdf).suffix.lower() or ".pdf"
+        pdf_name = f"TALON_{cliente_file}_{rfc}{extension_origen}"
+
+        pdf_result = upload_small_file(
+            site_id=site_id,
+            drive_id=drive_id,
+            remote_folder_path=remote_folder_path,
+            local_file_path=ruta_pdf,
+            remote_file_name=pdf_name
+        )
+
+        pdf_web_url = pdf_result.get("webUrl")
 
     excel_result = upload_small_file(
         site_id=site_id,
@@ -316,6 +321,6 @@ def subir_revision_a_graph(
 
     return {
         "remote_folder_path": remote_folder_path,
-        "pdf_web_url": pdf_result.get("webUrl"),
+        "pdf_web_url": pdf_web_url,
         "excel_web_url": excel_result.get("webUrl")
     }
