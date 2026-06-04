@@ -39,6 +39,12 @@ def generar_resultado_liquidez(revision: dict, tiene_programado: str) -> str:
     programado = revision["programado"]
 
     if liquidez_final > 0:
+        if tiene_programado == "Sí" and programado > 0:
+            return (
+                f"Tiene liquidez de {formato_moneda(liquidez_final)}. "
+                f"Tiene un programado por {formato_moneda(programado)}."
+            )
+
         return f"Tiene liquidez de {formato_moneda(liquidez_final)}."
 
     if liquidez_final < 0 and tiene_programado == "Sí" and programado > 0:
@@ -466,7 +472,7 @@ if datos is not None:
 
     st.markdown(
         f"""
-        <div style="font-size:1.25rem; font-weight:700; line-height:1.7;">
+        <div style="font-size:1.5rem; font-weight:700; line-height:1.7;">
         {mensaje_html}
         </div>
         """,
