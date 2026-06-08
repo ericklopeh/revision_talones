@@ -1,6 +1,7 @@
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
 
@@ -137,6 +138,132 @@ def calcular_revision_desde_registro(registro: dict) -> dict:
         descuentos_talon=float(registro["descuentos"]),
         abono_extra=float(registro.get("abono_extra", 0)),
         programado=float(registro.get("programado", 0))
+    )
+
+
+def registros_activos(registros: list) -> list:
+    return [r for r in registros if r.get("procesar", True)]
+
+
+def consolidar_codigos(registros: list) -> dict:
+    codigos_sumados = {}
+
+    for registro in registros:
+        codigos_manual = construir_codigos_manual(registro.get("codigos", {}))
+
+        for cod, info in codigos_manual.items():
+            codigos_sumados[cod] = codigos_sumados.get(cod, 0.0) + float(info["importe"])
+
+    return {
+        cod: {"descripcion": "consolidado", "importe": round(valor, 2)}
+        for cod, valor in codigos_sumados.items()
+    }
+
+
+def calcular_revision_consolidada(registros: list) -> Optional[dict]:
+    activos = registros_activos(registros)
+
+    if not activos:
+        return None
+
+    codigos = consolidar_codigos(activos)
+    total_descuentos = sum(float(r["descuentos"]) for r in activos)
+    total_abono = sum(float(r.get("abono_extra", 0)) for r in activos)
+    total_programado = sum(float(r.get("programado", 0)) for r in activos)
+
+    return calcular_revision_talon(
+        codigos_extraidos=codigos,
+        descuentos_talon=total_descuentos,
+        abono_extra=total_abono,
+        programado=total_programado
+    )
+
+
+def generar_mensaje_vendedor_lote(promotor: str, registros: list, revision: dict) -> str:
+    activos = registros_activos(registros)
+    tiene_prog = tiene_programado_desde_monto(revision["programado"])
+    resultado_total = generar_resultado_liquidez(revision, tiene_prog)
+
+    cantidad = len(activos)
+    lineas_clientes = []
+
+    for registro in activos:
+        revision_individual = calcular_revision_desde_registro(registro)
+        nombre = registro.get("nombre", "").strip() or registro.get("archivo", "Sin nombre")
+        lineas_clientes.append(
+            f"- {nombre} — Liquidez: {formato_moneda(revision_individual['liquidez_final'])}"
+        )
+
+    clientes_texto = "\n".join(lineas_clientes)
+
+    if cantidad == 1:
+        intro = f"Se realizó la revisión del talón correspondiente al promotor {promotor}:"
+    else:
+        intro = (
+            f"Se realizó la revisión de {cantidad} talones "
+            f"correspondientes al promotor {promotor}:"
+        )
+
+    return f"""{intro}
+
+Clientes revisados:
+{clientes_texto}
+
+Resultado total de la revisión:
+{resultado_total}"""
+
+
+def render_resumen_revision(revision: dict, tiene_programado: str, key_prefix: str = ""):
+    resultado_liquidez = generar_resultado_liquidez(revision, tiene_programado)
+
+    st.subheader("Cálculo de revisión")
+
+    col7, col8, col9 = st.columns(3)
+
+    with col7:
+        st.metric("Ingresos revisión", formato_moneda(revision["ingresos"]))
+
+    with col8:
+        st.metric("Descuentos", formato_moneda(revision["descuentos"]))
+
+    with col9:
+        st.metric("Saldo al 100", formato_moneda(revision["saldo_100"]))
+
+    col10, col11, col12 = st.columns(3)
+
+    with col10:
+        st.metric("Total para venta 70%", formato_moneda(revision["total_para_venta_70"]))
+
+    with col11:
+        st.metric("Saldo al 70%", formato_moneda(revision["saldo_70"]))
+
+    with col12:
+        st.metric("Liquidez final", formato_moneda(revision["liquidez_final"]))
+
+    st.info(resultado_liquidez)
+
+    return resultado_liquidez
+
+
+def render_mensaje_vendedor(mensaje: str, key_prefix: str = ""):
+    st.subheader("Mensaje para vendedor")
+
+    mensaje_html = mensaje.replace("\n", "<br>")
+
+    st.markdown(
+        f"""
+        <div style="font-size:1.5rem; font-weight:700; line-height:1.7;">
+        {mensaje_html}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.text_area(
+        "Texto formal para copiar y enviar",
+        value=mensaje,
+        height=220,
+        key=f"{key_prefix}mensaje_area"
     )
 
 
@@ -462,52 +589,11 @@ with tab_individual:
         st.dataframe(tabla_codigos, use_container_width=True)
         st.divider()
 
-        st.subheader("Cálculo de revisión")
-
-        col7, col8, col9 = st.columns(3)
-
-        with col7:
-            st.metric("Ingresos revisión", formato_moneda(revision["ingresos"]))
-
-        with col8:
-            st.metric("Descuentos", formato_moneda(revision["descuentos"]))
-
-        with col9:
-            st.metric("Saldo al 100", formato_moneda(revision["saldo_100"]))
-
-        col10, col11, col12 = st.columns(3)
-
-        with col10:
-            st.metric("Total para venta 70%", formato_moneda(revision["total_para_venta_70"]))
-
-        with col11:
-            st.metric("Saldo al 70%", formato_moneda(revision["saldo_70"]))
-
-        with col12:
-            st.metric("Liquidez final", formato_moneda(revision["liquidez_final"]))
-
-        st.info(resultado_liquidez)
+        tiene_programado_consolidado = tiene_programado
+        render_resumen_revision(revision, tiene_programado_consolidado, "ind_")
 
         st.divider()
-        st.subheader("Mensaje para vendedor")
-
-        mensaje_html = mensaje.replace("\n", "<br>")
-
-        st.markdown(
-            f"""
-            <div style="font-size:1.5rem; font-weight:700; line-height:1.7;">
-            {mensaje_html}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        st.text_area(
-            "Texto formal para copiar y enviar",
-            value=mensaje,
-            height=220,
-            key="ind_mensaje_area"
-        )
+        render_mensaje_vendedor(mensaje, "ind_")
 
         st.divider()
         st.subheader("Generar Excel de revisión")
@@ -612,16 +698,16 @@ with tab_individual:
 # =============================================================================
 
 with tab_lote:
-    st.subheader("Revisión en lote del mismo promotor")
+    st.subheader("Revisión de uno o varios talones del mismo promotor")
     st.caption(
-        "Sube varios talones del mismo profesor. Revisa y corrige la tabla, "
-        "luego genera y sube todos a OneDrive/SharePoint."
+        "Sube 1 o más talones del mismo promotor. La app suma todo y muestra "
+        "un resumen consolidado como en la pestaña Un talón."
     )
 
     promotor, qna, anio, semana = render_ajustes_revision("lote_")
 
     archivos_lote = st.file_uploader(
-        "Sube varios talones (PDF o imagen)",
+        "Sube uno o varios talones (PDF o imagen)",
         type=["pdf", "jpg", "jpeg", "png"],
         accept_multiple_files=True,
         key="uploader_lote"
@@ -726,26 +812,71 @@ with tab_lote:
             registros[indice_sel]["codigos"] = codigos_actualizados
             st.session_state.lote_registros = registros
 
-        resumen_filas = []
+        revision_consolidada = calcular_revision_consolidada(registros)
 
-        for registro in registros:
-            revision = calcular_revision_desde_registro(registro)
-            tiene_prog = tiene_programado_desde_monto(registro.get("programado", 0))
-            resultado = generar_resultado_liquidez(revision, tiene_prog)
+        if revision_consolidada:
+            cantidad_activos = len(registros_activos(registros))
+            tiene_prog_total = tiene_programado_desde_monto(revision_consolidada["programado"])
+            mensaje_lote = generar_mensaje_vendedor_lote(
+                promotor=promotor,
+                registros=registros,
+                revision=revision_consolidada
+            )
 
-            resumen_filas.append({
-                "Archivo": registro["archivo"],
-                "Nombre": registro["nombre"],
-                "RFC": registro["rfc"],
-                "Liquidez": revision["liquidez_final"],
-                "Resultado": resultado,
-                "Error lectura": registro.get("error") or ""
-            })
+            st.divider()
+            st.subheader(
+                f"Resumen consolidado ({cantidad_activos} talón"
+                f"{'es' if cantidad_activos != 1 else ''})"
+            )
+            st.caption(
+                "Suma de todos los talones marcados con Procesar. "
+                "El cálculo se actualiza al instante."
+            )
 
-        st.subheader("Resumen calculado")
-        df_resumen = pd.DataFrame(resumen_filas)
-        df_resumen["Liquidez"] = df_resumen["Liquidez"].apply(formato_moneda)
-        st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+            st.subheader("Códigos usados en tu formato (sumados)")
+            codigos_revision = revision_consolidada["codigos_revision"]
+
+            tabla_codigos = [
+                {
+                    "Código formato": cod,
+                    "Equivale en PDF": equiv,
+                    "Importe": codigos_revision[cod]
+                }
+                for cod, equiv in CODIGOS_FORMATO
+            ]
+
+            st.dataframe(tabla_codigos, use_container_width=True)
+            st.divider()
+
+            render_resumen_revision(revision_consolidada, tiene_prog_total, "lote_")
+
+            st.divider()
+            render_mensaje_vendedor(mensaje_lote, "lote_")
+
+            with st.expander("Detalle por cliente"):
+                resumen_filas = []
+
+                for registro in registros_activos(registros):
+                    revision_ind = calcular_revision_desde_registro(registro)
+                    tiene_prog = tiene_programado_desde_monto(registro.get("programado", 0))
+                    resultado = generar_resultado_liquidez(revision_ind, tiene_prog)
+
+                    resumen_filas.append({
+                        "Archivo": registro["archivo"],
+                        "Nombre": registro["nombre"],
+                        "RFC": registro["rfc"],
+                        "Liquidez": formato_moneda(revision_ind["liquidez_final"]),
+                        "Resultado": resultado,
+                        "Error lectura": registro.get("error") or ""
+                    })
+
+                st.dataframe(
+                    pd.DataFrame(resumen_filas),
+                    use_container_width=True,
+                    hide_index=True
+                )
+        else:
+            st.warning("Marca al menos un talón con Procesar para ver el resumen consolidado.")
 
         st.divider()
 
@@ -831,4 +962,4 @@ with tab_lote:
                 st.dataframe(pd.DataFrame(resultados_proceso), use_container_width=True, hide_index=True)
 
     else:
-        st.info("Sube varios talones del mismo promotor para comenzar la revisión en lote.")
+        st.info("Sube uno o varios talones del mismo promotor para comenzar.")
