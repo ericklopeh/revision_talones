@@ -2,6 +2,8 @@ import streamlit as st
 from pathlib import Path
 from datetime import datetime
 
+import pandas as pd
+
 from services.extractor_pdf import extraer_datos_talon, extraer_datos_talon_imagen
 from services.calculadora import calcular_revision_talon
 from services.generador_excel import generar_excel_revision
@@ -14,17 +16,32 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📄 Revisión de Talones")
-st.caption("Sistema para leer talón, calcular liquidez, generar mensaje y crear Excel de revisión.")
+PROMOTORES = [
+    "Victor Vega",
+    "Juan Manuel",
+    "Leonardo Arevalo",
+    "Eliezer Chipuli",
+    "Gerardo Santana",
+    "Sergio Valadez",
+    "Sergio Vazquez"
+]
 
-archivo_pdf = st.file_uploader(
-    "Sube un talón en PDF o imagen (JPG/PNG)",
-    type=["pdf", "jpg", "jpeg", "png"]
-)
+CODIGOS_FORMATO = [
+    ("E4", ""),
+    ("E3", ""),
+    ("Q", "A2"),
+    ("CP", ""),
+    ("7", "07"),
+    ("CT", "CT"),
+    ("7B", ""),
+    ("E9", ""),
+    ("SG", "SG"),
+    ("O1", "01"),
+    ("DC", "DC")
+]
 
-modo_manual = st.checkbox(
-    "Captura manual (sin subir archivo o si no se detectó bien el talón)"
-)
+Path("uploads").mkdir(exist_ok=True)
+Path("output").mkdir(exist_ok=True)
 
 
 def formato_moneda(valor: float) -> str:
@@ -79,139 +96,120 @@ Resultado de la revisión:
     return texto
 
 
-Path("uploads").mkdir(exist_ok=True)
-Path("output").mkdir(exist_ok=True)
+def importe_detectado(codigos: dict, cod: str, equiv: str) -> float:
+    if cod in codigos:
+        return float(codigos[cod]["importe"])
 
-datos = None
-ruta_pdf = None
+    if equiv and equiv in codigos:
+        return float(codigos[equiv]["importe"])
 
-if archivo_pdf:
-    ruta_pdf = Path("uploads") / archivo_pdf.name
+    return 0.0
 
-    with open(ruta_pdf, "wb") as archivo:
-        archivo.write(archivo_pdf.getbuffer())
 
-    es_imagen = ruta_pdf.suffix.lower() in [".jpg", ".jpeg", ".png"]
+def construir_codigos_manual(codigos_detectados: dict) -> dict:
+    codigos_manual = {}
 
-    try:
-        if es_imagen:
-            datos = extraer_datos_talon_imagen(str(ruta_pdf))
-        else:
-            datos = extraer_datos_talon(str(ruta_pdf))
-    except RuntimeError as error:
-        st.error(
-            "No se pudo leer la imagen por OCR. "
-            "Verifica que Tesseract esté disponible en el entorno."
-        )
-        st.exception(error)
-        st.stop()
+    for cod, equiv in CODIGOS_FORMATO:
+        valor = importe_detectado(codigos_detectados, cod, equiv)
+        codigos_manual[cod] = {"descripcion": "manual", "importe": valor}
+
+    return codigos_manual
+
+
+def tiene_programado_desde_monto(programado: float) -> str:
+    return "Sí" if programado > 0 else "No"
+
+
+def extraer_datos_desde_archivo(ruta: Path) -> dict:
+    es_imagen = ruta.suffix.lower() in [".jpg", ".jpeg", ".png"]
 
     if es_imagen:
-        st.success("Imagen leída por OCR. Revisa y corrige los datos antes de generar el Excel.")
-    else:
-        st.success("Talón leído correctamente. Puedes corregir cualquier dato antes de generar el Excel.")
+        return extraer_datos_talon_imagen(str(ruta))
 
-elif modo_manual:
-    datos = {
-        "nombre": "",
-        "rfc": "",
-        "fecha_pago": "",
-        "percepciones": 0.0,
-        "descuentos": 0.0,
-        "liquido": 0.0,
-        "codigos": {},
-        "texto_original": ""
-    }
-    st.info("Captura manual activada. Llena los campos a mano.")
+    return extraer_datos_talon(str(ruta))
 
 
-if datos is not None:
-    # =========================
-    # DATOS DEL TALÓN (EDITABLES)
-    # =========================
+def calcular_revision_desde_registro(registro: dict) -> dict:
+    codigos_manual = construir_codigos_manual(registro.get("codigos", {}))
 
-    st.subheader("Datos del talón (editables)")
-    st.caption(
-        "Los valores se precargan con lo detectado. "
-        "Corrige lo que haga falta; el cálculo se actualiza al instante."
+    return calcular_revision_talon(
+        codigos_extraidos=codigos_manual,
+        descuentos_talon=float(registro["descuentos"]),
+        abono_extra=float(registro.get("abono_extra", 0)),
+        programado=float(registro.get("programado", 0))
     )
 
-    col1, col2, col3 = st.columns(3)
 
-    with col1:
-        nombre = st.text_input("Nombre", value=datos["nombre"])
-
-    with col2:
-        rfc = st.text_input("RFC", value=datos["rfc"])
-
-    with col3:
-        fecha_pago = st.text_input("Fecha talón", value=datos.get("fecha_pago", ""))
-
-    col4, col5, col6 = st.columns(3)
-
-    with col4:
-        percepciones = st.number_input(
-            "Percepciones talón",
-            value=float(datos["percepciones"]),
-            step=100.0,
-            format="%.2f"
-        )
-
-    with col5:
-        descuentos = st.number_input(
-            "Descuentos talón",
-            value=float(datos["descuentos"]),
-            step=100.0,
-            format="%.2f"
-        )
-
-    with col6:
-        liquido = st.number_input(
-            "Líquido talón",
-            value=float(datos["liquido"]),
-            step=100.0,
-            format="%.2f"
-        )
-
-    datos_editados = {
-        "nombre": nombre,
-        "rfc": rfc,
-        "fecha_pago": fecha_pago,
-        "percepciones": percepciones,
-        "descuentos": descuentos,
-        "liquido": liquido,
-        "codigos": datos["codigos"],
-        "texto_original": datos.get("texto_original", "")
+def registro_a_datos_excel(registro: dict) -> dict:
+    return {
+        "nombre": registro["nombre"],
+        "rfc": registro["rfc"],
+        "fecha_pago": registro.get("fecha_pago", ""),
+        "percepciones": float(registro.get("percepciones", 0)),
+        "descuentos": float(registro["descuentos"]),
+        "liquido": float(registro.get("liquido", 0)),
+        "codigos": registro.get("codigos", {}),
+        "texto_original": registro.get("texto_original", "")
     }
 
-    st.divider()
 
-    # =========================
-    # AJUSTES PARA REVISIÓN
-    # =========================
+def procesar_archivo_lote(archivo) -> dict:
+    ruta = Path("uploads") / f"lote_{archivo.name}"
 
-    st.subheader("Ajustes para revisión")
+    with open(ruta, "wb") as salida:
+        salida.write(archivo.getbuffer())
 
+    try:
+        datos = extraer_datos_desde_archivo(ruta)
+    except Exception as error:
+        return {
+            "archivo": archivo.name,
+            "ruta": str(ruta),
+            "nombre": "",
+            "rfc": "",
+            "fecha_pago": "",
+            "percepciones": 0.0,
+            "descuentos": 0.0,
+            "liquido": 0.0,
+            "abono_extra": 0.0,
+            "programado": 0.0,
+            "codigos": {},
+            "texto_original": "",
+            "error": str(error)
+        }
+
+    return {
+        "archivo": archivo.name,
+        "ruta": str(ruta),
+        "nombre": datos.get("nombre", ""),
+        "rfc": datos.get("rfc", ""),
+        "fecha_pago": datos.get("fecha_pago", ""),
+        "percepciones": float(datos.get("percepciones", 0)),
+        "descuentos": float(datos.get("descuentos", 0)),
+        "liquido": float(datos.get("liquido", 0)),
+        "abono_extra": 0.0,
+        "programado": 0.0,
+        "codigos": datos.get("codigos", {}),
+        "texto_original": datos.get("texto_original", ""),
+        "error": None
+    }
+
+
+def render_ajustes_revision(key_prefix: str = ""):
     col_v, col_q, col_anio, col_semana = st.columns(4)
 
     with col_v:
         promotor = st.selectbox(
             "Promotor / vendedor",
-            [
-                "Victor Vega",
-                "Juan Manuel",
-                "Leonardo Arevalo",
-                "Eliezer Chipuli",
-                "Gerardo Santana",
-                "Sergio Valadez",
-                "Sergio Vazquez"
-            ]
+            PROMOTORES,
+            key=f"{key_prefix}promotor"
         )
 
     with col_q:
         qna = st.text_input(
             "QNA",
-            value="09-2026"
+            value="09-2026",
+            key=f"{key_prefix}qna"
         )
 
     with col_anio:
@@ -220,7 +218,8 @@ if datos is not None:
             min_value=2024,
             max_value=2035,
             value=datetime.now().year,
-            step=1
+            step=1,
+            key=f"{key_prefix}anio"
         )
 
     with col_semana:
@@ -229,350 +228,607 @@ if datos is not None:
             min_value=1,
             max_value=53,
             value=datetime.now().isocalendar().week,
-            step=1
+            step=1,
+            key=f"{key_prefix}semana"
         )
 
-    col_a, col_b, col_c = st.columns(3)
+    return promotor, qna, int(anio), int(semana)
 
-    with col_a:
-        abono_extra = st.number_input(
-            "Abono extra / apoyo adicional",
-            min_value=0.0,
-            value=0.0,
-            step=500.0,
-            format="%.2f"
-        )
 
-    with col_b:
-        tiene_programado = st.selectbox(
-            "¿Tiene programado?",
-            ["No", "Sí"]
-        )
+st.title("📄 Revisión de Talones")
+st.caption("Sistema para leer talón, calcular liquidez, generar mensaje y crear Excel de revisión.")
 
-    with col_c:
-        if tiene_programado == "Sí":
-            programado = st.number_input(
-                "Monto programado",
-                min_value=0.0,
-                value=0.0,
-                step=100.0,
-                format="%.2f"
-            )
-        else:
-            programado = 0.0
-            st.number_input(
-                "Monto programado",
-                min_value=0.0,
-                value=0.0,
-                step=100.0,
-                format="%.2f",
-                disabled=True
-            )
+tab_individual, tab_lote = st.tabs(["Un talón", "Varios talones (lote)"])
 
-    # =========================
-    # IMPORTES POR CÓDIGO (EDITABLES)
-    # =========================
 
-    st.subheader("Importes por código (editables)")
-    st.caption(
-        "Se precargan con lo detectado. Corrige o captura los importes a mano "
-        "si la lectura falló."
+# =============================================================================
+# TAB: UN TALÓN
+# =============================================================================
+
+with tab_individual:
+    archivo_pdf = st.file_uploader(
+        "Sube un talón en PDF o imagen (JPG/PNG)",
+        type=["pdf", "jpg", "jpeg", "png"],
+        key="uploader_individual"
     )
 
-    codigos_formato = [
-        ("E4", ""),
-        ("E3", ""),
-        ("Q", "A2"),
-        ("CP", ""),
-        ("7", "07"),
-        ("CT", "CT"),
-        ("7B", ""),
-        ("E9", ""),
-        ("SG", "SG"),
-        ("O1", "01"),
-        ("DC", "DC")
-    ]
-
-    def importe_detectado(cod: str, equiv: str) -> float:
-        codigos = datos["codigos"]
-
-        if cod in codigos:
-            return float(codigos[cod]["importe"])
-
-        if equiv and equiv in codigos:
-            return float(codigos[equiv]["importe"])
-
-        return 0.0
-
-    codigos_manual = {}
-    columnas_codigos = st.columns(4)
-
-    for indice, (cod, equiv) in enumerate(codigos_formato):
-        with columnas_codigos[indice % 4]:
-            etiqueta = cod + (f" (PDF: {equiv})" if equiv else "")
-            valor = st.number_input(
-                etiqueta,
-                value=importe_detectado(cod, equiv),
-                step=100.0,
-                format="%.2f",
-                key=f"codigo_{cod}"
-            )
-            codigos_manual[cod] = {"descripcion": "manual", "importe": valor}
-
-    st.divider()
-
-    # =========================
-    # CÁLCULO
-    # =========================
-
-    revision = calcular_revision_talon(
-        codigos_extraidos=codigos_manual,
-        descuentos_talon=descuentos,
-        abono_extra=abono_extra,
-        programado=programado
+    modo_manual = st.checkbox(
+        "Captura manual (sin subir archivo o si no se detectó bien el talón)",
+        key="modo_manual_individual"
     )
 
-    resultado_liquidez = generar_resultado_liquidez(
-        revision=revision,
-        tiene_programado=tiene_programado
-    )
+    datos = None
+    ruta_pdf = None
 
-    mensaje = generar_mensaje_vendedor(
-        datos=datos_editados,
-        revision=revision,
-        tiene_programado=tiene_programado
-    )
+    if archivo_pdf:
+        ruta_pdf = Path("uploads") / archivo_pdf.name
 
-    st.divider()
+        with open(ruta_pdf, "wb") as archivo:
+            archivo.write(archivo_pdf.getbuffer())
 
-    # =========================
-    # CÓDIGOS USADOS
-    # =========================
-
-    st.subheader("Códigos usados en tu formato")
-
-    codigos_revision = revision["codigos_revision"]
-
-    tabla_codigos = [
-        {
-            "Código formato": "E4",
-            "Equivale en PDF": "",
-            "Importe": codigos_revision["E4"]
-        },
-        {
-            "Código formato": "E3",
-            "Equivale en PDF": "",
-            "Importe": codigos_revision["E3"]
-        },
-        {
-            "Código formato": "Q",
-            "Equivale en PDF": "A2",
-            "Importe": codigos_revision["Q"]
-        },
-        {
-            "Código formato": "CP",
-            "Equivale en PDF": "",
-            "Importe": codigos_revision["CP"]
-        },
-        {
-            "Código formato": "7",
-            "Equivale en PDF": "07",
-            "Importe": codigos_revision["7"]
-        },
-        {
-            "Código formato": "CT",
-            "Equivale en PDF": "CT",
-            "Importe": codigos_revision["CT"]
-        },
-        {
-            "Código formato": "7B",
-            "Equivale en PDF": "",
-            "Importe": codigos_revision["7B"]
-        },
-        {
-            "Código formato": "E9",
-            "Equivale en PDF": "",
-            "Importe": codigos_revision["E9"]
-        },
-        {
-            "Código formato": "SG",
-            "Equivale en PDF": "SG",
-            "Importe": codigos_revision["SG"]
-        },
-        {
-            "Código formato": "O1",
-            "Equivale en PDF": "01",
-            "Importe": codigos_revision["O1"]
-        },
-        {
-            "Código formato": "DC",
-            "Equivale en PDF": "DC",
-            "Importe": codigos_revision["DC"]
-        }
-    ]
-
-    st.dataframe(tabla_codigos, use_container_width=True)
-
-    st.divider()
-
-    # =========================
-    # CÁLCULO DE REVISIÓN
-    # =========================
-
-    st.subheader("Cálculo de revisión")
-
-    col7, col8, col9 = st.columns(3)
-
-    with col7:
-        st.metric("Ingresos revisión", formato_moneda(revision["ingresos"]))
-
-    with col8:
-        st.metric("Descuentos", formato_moneda(revision["descuentos"]))
-
-    with col9:
-        st.metric("Saldo al 100", formato_moneda(revision["saldo_100"]))
-
-    col10, col11, col12 = st.columns(3)
-
-    with col10:
-        st.metric("Total para venta 70%", formato_moneda(revision["total_para_venta_70"]))
-
-    with col11:
-        st.metric("Saldo al 70%", formato_moneda(revision["saldo_70"]))
-
-    with col12:
-        st.metric("Liquidez final", formato_moneda(revision["liquidez_final"]))
-
-    st.info(resultado_liquidez)
-
-    st.markdown(
-        f"""
-        ### Resumen
-
-        **Ingresos revisión:** {formato_moneda(revision["ingresos"])}  
-        **Descuentos:** {formato_moneda(revision["descuentos"])}  
-        **Saldo al 100:** {formato_moneda(revision["saldo_100"])}  
-        **Saldo al 70:** {formato_moneda(revision["saldo_70"])}  
-        **Abono extra / apoyo adicional:** {formato_moneda(revision["abono_extra"])}  
-        **Programado:** {formato_moneda(revision["programado"])}  
-        **Liquidez final:** {formato_moneda(revision["liquidez_final"])}  
-        **Resultado:** {resultado_liquidez}
-        """
-    )
-
-    st.divider()
-
-    # =========================
-    # MENSAJE PARA VENDEDOR
-    # =========================
-
-    st.subheader("Mensaje para vendedor")
-
-    mensaje_html = mensaje.replace("\n", "<br>")
-
-    st.markdown(
-        f"""
-        <div style="font-size:1.5rem; font-weight:700; line-height:1.7;">
-        {mensaje_html}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.text_area(
-        "Texto formal para copiar y enviar",
-        value=mensaje,
-        height=220
-    )
-
-    st.divider()
-
-    # =========================
-    # GENERAR EXCEL
-    # =========================
-
-    st.subheader("Generar Excel de revisión")
-
-    if st.button("Generar Excel", type="primary"):
-        if not datos_editados["nombre"].strip() or not datos_editados["rfc"].strip():
-            st.error("Captura al menos el Nombre y el RFC antes de generar el Excel.")
-            st.stop()
+        es_imagen = ruta_pdf.suffix.lower() in [".jpg", ".jpeg", ".png"]
 
         try:
-            ruta_excel = generar_excel_revision(
-                datos=datos_editados,
-                revision=revision,
-                mensaje_vendedor=mensaje,
-                promotor=promotor,
-                qna=qna
+            if es_imagen:
+                datos = extraer_datos_talon_imagen(str(ruta_pdf))
+            else:
+                datos = extraer_datos_talon(str(ruta_pdf))
+        except RuntimeError as error:
+            st.error(
+                "No se pudo leer la imagen por OCR. "
+                "Verifica que Tesseract esté disponible en el entorno."
+            )
+            st.exception(error)
+            st.stop()
+
+        if es_imagen:
+            st.success("Imagen leída por OCR. Revisa y corrige los datos antes de generar el Excel.")
+        else:
+            st.success("Talón leído correctamente. Puedes corregir cualquier dato antes de generar el Excel.")
+
+    elif modo_manual:
+        datos = {
+            "nombre": "",
+            "rfc": "",
+            "fecha_pago": "",
+            "percepciones": 0.0,
+            "descuentos": 0.0,
+            "liquido": 0.0,
+            "codigos": {},
+            "texto_original": ""
+        }
+        st.info("Captura manual activada. Llena los campos a mano.")
+
+    if datos is not None:
+        st.subheader("Datos del talón (editables)")
+        st.caption(
+            "Los valores se precargan con lo detectado. "
+            "Corrige lo que haga falta; el cálculo se actualiza al instante."
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            nombre = st.text_input("Nombre", value=datos["nombre"], key="ind_nombre")
+
+        with col2:
+            rfc = st.text_input("RFC", value=datos["rfc"], key="ind_rfc")
+
+        with col3:
+            fecha_pago = st.text_input(
+                "Fecha talón",
+                value=datos.get("fecha_pago", ""),
+                key="ind_fecha"
             )
 
-            with open(ruta_excel, "rb") as archivo:
-                st.download_button(
-                    label="Descargar Excel generado",
-                    data=archivo,
-                    file_name=Path(ruta_excel).name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        col4, col5, col6 = st.columns(3)
+
+        with col4:
+            percepciones = st.number_input(
+                "Percepciones talón",
+                value=float(datos["percepciones"]),
+                step=100.0,
+                format="%.2f",
+                key="ind_percepciones"
+            )
+
+        with col5:
+            descuentos = st.number_input(
+                "Descuentos talón",
+                value=float(datos["descuentos"]),
+                step=100.0,
+                format="%.2f",
+                key="ind_descuentos"
+            )
+
+        with col6:
+            liquido = st.number_input(
+                "Líquido talón",
+                value=float(datos["liquido"]),
+                step=100.0,
+                format="%.2f",
+                key="ind_liquido"
+            )
+
+        datos_editados = {
+            "nombre": nombre,
+            "rfc": rfc,
+            "fecha_pago": fecha_pago,
+            "percepciones": percepciones,
+            "descuentos": descuentos,
+            "liquido": liquido,
+            "codigos": datos["codigos"],
+            "texto_original": datos.get("texto_original", "")
+        }
+
+        st.divider()
+        st.subheader("Ajustes para revisión")
+        promotor, qna, anio, semana = render_ajustes_revision("ind_")
+
+        col_a, col_b, col_c = st.columns(3)
+
+        with col_a:
+            abono_extra = st.number_input(
+                "Abono extra / apoyo adicional",
+                min_value=0.0,
+                value=0.0,
+                step=500.0,
+                format="%.2f",
+                key="ind_abono"
+            )
+
+        with col_b:
+            tiene_programado = st.selectbox(
+                "¿Tiene programado?",
+                ["No", "Sí"],
+                key="ind_tiene_programado"
+            )
+
+        with col_c:
+            if tiene_programado == "Sí":
+                programado = st.number_input(
+                    "Monto programado",
+                    min_value=0.0,
+                    value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                    key="ind_programado"
+                )
+            else:
+                programado = 0.0
+                st.number_input(
+                    "Monto programado",
+                    min_value=0.0,
+                    value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                    disabled=True,
+                    key="ind_programado_disabled"
                 )
 
-            st.success(f"Excel generado correctamente: {ruta_excel}")
+        st.subheader("Importes por código (editables)")
+        st.caption(
+            "Se precargan con lo detectado. Corrige o captura los importes a mano "
+            "si la lectura falló."
+        )
+
+        codigos_manual = {}
+        columnas_codigos = st.columns(4)
+
+        for indice, (cod, equiv) in enumerate(CODIGOS_FORMATO):
+            with columnas_codigos[indice % 4]:
+                etiqueta = cod + (f" (PDF: {equiv})" if equiv else "")
+                valor = st.number_input(
+                    etiqueta,
+                    value=importe_detectado(datos["codigos"], cod, equiv),
+                    step=100.0,
+                    format="%.2f",
+                    key=f"ind_codigo_{cod}"
+                )
+                codigos_manual[cod] = {"descripcion": "manual", "importe": valor}
+
+        st.divider()
+
+        revision = calcular_revision_talon(
+            codigos_extraidos=codigos_manual,
+            descuentos_talon=descuentos,
+            abono_extra=abono_extra,
+            programado=programado
+        )
+
+        resultado_liquidez = generar_resultado_liquidez(
+            revision=revision,
+            tiene_programado=tiene_programado
+        )
+
+        mensaje = generar_mensaje_vendedor(
+            datos=datos_editados,
+            revision=revision,
+            tiene_programado=tiene_programado
+        )
+
+        st.subheader("Códigos usados en tu formato")
+        codigos_revision = revision["codigos_revision"]
+
+        tabla_codigos = [
+            {
+                "Código formato": cod,
+                "Equivale en PDF": equiv,
+                "Importe": codigos_revision[cod]
+            }
+            for cod, equiv in CODIGOS_FORMATO
+        ]
+
+        st.dataframe(tabla_codigos, use_container_width=True)
+        st.divider()
+
+        st.subheader("Cálculo de revisión")
+
+        col7, col8, col9 = st.columns(3)
+
+        with col7:
+            st.metric("Ingresos revisión", formato_moneda(revision["ingresos"]))
+
+        with col8:
+            st.metric("Descuentos", formato_moneda(revision["descuentos"]))
+
+        with col9:
+            st.metric("Saldo al 100", formato_moneda(revision["saldo_100"]))
+
+        col10, col11, col12 = st.columns(3)
+
+        with col10:
+            st.metric("Total para venta 70%", formato_moneda(revision["total_para_venta_70"]))
+
+        with col11:
+            st.metric("Saldo al 70%", formato_moneda(revision["saldo_70"]))
+
+        with col12:
+            st.metric("Liquidez final", formato_moneda(revision["liquidez_final"]))
+
+        st.info(resultado_liquidez)
+
+        st.divider()
+        st.subheader("Mensaje para vendedor")
+
+        mensaje_html = mensaje.replace("\n", "<br>")
+
+        st.markdown(
+            f"""
+            <div style="font-size:1.5rem; font-weight:700; line-height:1.7;">
+            {mensaje_html}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.text_area(
+            "Texto formal para copiar y enviar",
+            value=mensaje,
+            height=220,
+            key="ind_mensaje_area"
+        )
+
+        st.divider()
+        st.subheader("Generar Excel de revisión")
+
+        if st.button("Generar Excel", type="primary", key="ind_generar_excel"):
+            if not datos_editados["nombre"].strip() or not datos_editados["rfc"].strip():
+                st.error("Captura al menos el Nombre y el RFC antes de generar el Excel.")
+                st.stop()
 
             try:
-                resultado_graph = subir_revision_a_graph(
-                    ruta_pdf=str(ruta_pdf) if ruta_pdf else None,
-                    ruta_excel=ruta_excel,
-                    anio=int(anio),
-                    semana=int(semana),
+                ruta_excel = generar_excel_revision(
+                    datos=datos_editados,
+                    revision=revision,
+                    mensaje_vendedor=mensaje,
                     promotor=promotor,
-                    nombre_cliente=datos_editados["nombre"],
-                    rfc=datos_editados["rfc"]
+                    qna=qna
                 )
 
-                st.success("Archivos subidos correctamente a OneDrive/SharePoint.")
-                st.write(f"Ruta remota: `{resultado_graph['remote_folder_path']}`")
+                with open(ruta_excel, "rb") as archivo:
+                    st.download_button(
+                        label="Descargar Excel generado",
+                        data=archivo,
+                        file_name=Path(ruta_excel).name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="ind_descargar_excel"
+                    )
 
-                if resultado_graph.get("pdf_web_url"):
-                    st.link_button("Abrir PDF en OneDrive", resultado_graph["pdf_web_url"])
+                st.success(f"Excel generado correctamente: {ruta_excel}")
 
-                if resultado_graph.get("excel_web_url"):
-                    st.link_button("Abrir Excel en OneDrive", resultado_graph["excel_web_url"])
+                try:
+                    resultado_graph = subir_revision_a_graph(
+                        ruta_pdf=str(ruta_pdf) if ruta_pdf else None,
+                        ruta_excel=ruta_excel,
+                        anio=anio,
+                        semana=semana,
+                        promotor=promotor,
+                        nombre_cliente=datos_editados["nombre"],
+                        rfc=datos_editados["rfc"]
+                    )
 
-            except GraphStorageError as error:
-                st.warning("El Excel se generó localmente, pero no se pudo subir a OneDrive/SharePoint.")
-                st.error(str(error))
+                    st.success("Archivos subidos correctamente a OneDrive/SharePoint.")
+                    st.write(f"Ruta remota: `{resultado_graph['remote_folder_path']}`")
+
+                    if resultado_graph.get("pdf_web_url"):
+                        st.link_button(
+                            "Abrir PDF en OneDrive",
+                            resultado_graph["pdf_web_url"],
+                            key="ind_link_pdf"
+                        )
+
+                    if resultado_graph.get("excel_web_url"):
+                        st.link_button(
+                            "Abrir Excel en OneDrive",
+                            resultado_graph["excel_web_url"],
+                            key="ind_link_excel"
+                        )
+
+                except GraphStorageError as error:
+                    st.warning(
+                        "El Excel se generó localmente, pero no se pudo subir a OneDrive/SharePoint."
+                    )
+                    st.error(str(error))
+
+                except Exception as error:
+                    st.warning(
+                        "El Excel se generó localmente, pero ocurrió un error inesperado "
+                        "al subir a OneDrive/SharePoint."
+                    )
+                    st.exception(error)
+
+            except FileNotFoundError:
+                st.error(
+                    "No se encontró la plantilla. Verifica que exista el archivo: "
+                    "templates/plantilla_revision_talon.xlsx"
+                )
 
             except Exception as error:
-                st.warning("El Excel se generó localmente, pero ocurrió un error inesperado al subir a OneDrive/SharePoint.")
+                st.error("Ocurrió un error al generar el Excel.")
                 st.exception(error)
 
-        except FileNotFoundError:
-            st.error(
-                "No se encontró la plantilla. Verifica que exista el archivo: "
-                "templates/plantilla_revision_talon.xlsx"
+        with st.expander("Ver todos los códigos detectados del PDF"):
+            tabla_todos = []
+
+            for codigo, info in datos["codigos"].items():
+                tabla_todos.append({
+                    "Código": codigo,
+                    "Descripción": info["descripcion"],
+                    "Importe": info["importe"]
+                })
+
+            st.dataframe(tabla_todos, use_container_width=True)
+
+        with st.expander("Ver texto extraído del PDF"):
+            st.text(datos["texto_original"])
+
+    else:
+        st.info("Sube un talón (PDF o imagen) o activa la captura manual para comenzar.")
+
+
+# =============================================================================
+# TAB: VARIOS TALONES (LOTE)
+# =============================================================================
+
+with tab_lote:
+    st.subheader("Revisión en lote del mismo promotor")
+    st.caption(
+        "Sube varios talones del mismo profesor. Revisa y corrige la tabla, "
+        "luego genera y sube todos a OneDrive/SharePoint."
+    )
+
+    promotor, qna, anio, semana = render_ajustes_revision("lote_")
+
+    archivos_lote = st.file_uploader(
+        "Sube varios talones (PDF o imagen)",
+        type=["pdf", "jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+        key="uploader_lote"
+    )
+
+    if archivos_lote:
+        nombres_actuales = tuple(sorted(archivo.name for archivo in archivos_lote))
+
+        if st.session_state.get("lote_nombres") != nombres_actuales:
+            st.session_state.lote_nombres = nombres_actuales
+            registros = []
+
+            with st.spinner(f"Procesando {len(archivos_lote)} talón(es)..."):
+                for archivo in archivos_lote:
+                    registros.append(procesar_archivo_lote(archivo))
+
+            st.session_state.lote_registros = registros
+
+        registros = st.session_state.get("lote_registros", [])
+
+        errores_lectura = [r for r in registros if r.get("error")]
+        if errores_lectura:
+            st.warning(
+                f"{len(errores_lectura)} archivo(s) no se pudieron leer correctamente. "
+                "Corrígelos manualmente en la tabla."
             )
 
-        except Exception as error:
-            st.error("Ocurrió un error al generar el Excel.")
-            st.exception(error)
+        df_lote = pd.DataFrame([
+            {
+                "Procesar": True,
+                "Archivo": r["archivo"],
+                "Nombre": r["nombre"],
+                "RFC": r["rfc"],
+                "Descuentos": float(r["descuentos"]),
+                "Abono extra": float(r.get("abono_extra", 0)),
+                "Programado": float(r.get("programado", 0))
+            }
+            for r in registros
+        ])
 
-    # =========================
-    # DEBUG / REVISIÓN
-    # =========================
+        st.subheader("Tabla editable")
+        st.caption("Corrige nombre, RFC, descuentos, abono extra y programado antes de generar.")
 
-    with st.expander("Ver todos los códigos detectados del PDF"):
-        tabla_todos = []
+        df_editado = st.data_editor(
+            df_lote,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "Procesar": st.column_config.CheckboxColumn(
+                    "Procesar",
+                    help="Desmarca si no quieres generar este talón",
+                    default=True
+                ),
+                "Archivo": st.column_config.TextColumn("Archivo", disabled=True),
+                "Descuentos": st.column_config.NumberColumn("Descuentos", format="%.2f"),
+                "Abono extra": st.column_config.NumberColumn("Abono extra", format="%.2f"),
+                "Programado": st.column_config.NumberColumn("Programado", format="%.2f")
+            },
+            key="lote_data_editor"
+        )
 
-        for codigo, info in datos["codigos"].items():
-            tabla_todos.append({
-                "Código": codigo,
-                "Descripción": info["descripcion"],
-                "Importe": info["importe"]
+        for indice, fila in df_editado.iterrows():
+            registros[indice]["nombre"] = str(fila["Nombre"]).strip()
+            registros[indice]["rfc"] = str(fila["RFC"]).strip()
+            registros[indice]["descuentos"] = float(fila["Descuentos"])
+            registros[indice]["abono_extra"] = float(fila["Abono extra"])
+            registros[indice]["programado"] = float(fila["Programado"])
+            registros[indice]["procesar"] = bool(fila["Procesar"])
+
+        st.session_state.lote_registros = registros
+
+        with st.expander("Corregir códigos de un talón"):
+            opciones_archivo = [r["archivo"] for r in registros]
+            archivo_seleccionado = st.selectbox(
+                "Selecciona el talón",
+                opciones_archivo,
+                key="lote_archivo_codigos"
+            )
+
+            indice_sel = opciones_archivo.index(archivo_seleccionado)
+            registro_sel = registros[indice_sel]
+
+            cols = st.columns(4)
+            codigos_actualizados = dict(registro_sel.get("codigos", {}))
+
+            for idx, (cod, equiv) in enumerate(CODIGOS_FORMATO):
+                with cols[idx % 4]:
+                    valor_actual = importe_detectado(codigos_actualizados, cod, equiv)
+                    nuevo_valor = st.number_input(
+                        cod + (f" ({equiv})" if equiv else ""),
+                        value=float(valor_actual),
+                        step=100.0,
+                        format="%.2f",
+                        key=f"lote_cod_{indice_sel}_{cod}"
+                    )
+                    codigos_actualizados[cod] = {
+                        "descripcion": "manual",
+                        "importe": nuevo_valor
+                    }
+
+            registros[indice_sel]["codigos"] = codigos_actualizados
+            st.session_state.lote_registros = registros
+
+        resumen_filas = []
+
+        for registro in registros:
+            revision = calcular_revision_desde_registro(registro)
+            tiene_prog = tiene_programado_desde_monto(registro.get("programado", 0))
+            resultado = generar_resultado_liquidez(revision, tiene_prog)
+
+            resumen_filas.append({
+                "Archivo": registro["archivo"],
+                "Nombre": registro["nombre"],
+                "RFC": registro["rfc"],
+                "Liquidez": revision["liquidez_final"],
+                "Resultado": resultado,
+                "Error lectura": registro.get("error") or ""
             })
 
-        st.dataframe(tabla_todos, use_container_width=True)
+        st.subheader("Resumen calculado")
+        df_resumen = pd.DataFrame(resumen_filas)
+        df_resumen["Liquidez"] = df_resumen["Liquidez"].apply(formato_moneda)
+        st.dataframe(df_resumen, use_container_width=True, hide_index=True)
 
-    with st.expander("Ver texto extraído del PDF"):
-        st.text(datos["texto_original"])
+        st.divider()
 
-else:
-    st.info("Sube un talón (PDF o imagen) o activa la captura manual para comenzar.")
+        if st.button("Generar y subir todos", type="primary", key="lote_generar_todos"):
+            resultados_proceso = []
+            procesados = 0
+            exitosos = 0
+
+            for registro in registros:
+                if not registro.get("procesar", True):
+                    continue
+
+                procesados += 1
+                nombre_cliente = registro.get("nombre", "").strip()
+                rfc_cliente = registro.get("rfc", "").strip()
+
+                if not nombre_cliente or not rfc_cliente:
+                    resultados_proceso.append({
+                        "Archivo": registro["archivo"],
+                        "Estado": "Error",
+                        "Detalle": "Falta Nombre o RFC"
+                    })
+                    continue
+
+                try:
+                    revision = calcular_revision_desde_registro(registro)
+                    tiene_prog = tiene_programado_desde_monto(registro.get("programado", 0))
+                    datos_excel = registro_a_datos_excel(registro)
+                    mensaje = generar_mensaje_vendedor(
+                        datos=datos_excel,
+                        revision=revision,
+                        tiene_programado=tiene_prog
+                    )
+
+                    ruta_excel = generar_excel_revision(
+                        datos=datos_excel,
+                        revision=revision,
+                        mensaje_vendedor=mensaje,
+                        promotor=promotor,
+                        qna=qna
+                    )
+
+                    detalle = f"Excel: {Path(ruta_excel).name}"
+
+                    try:
+                        resultado_graph = subir_revision_a_graph(
+                            ruta_pdf=registro.get("ruta"),
+                            ruta_excel=ruta_excel,
+                            anio=anio,
+                            semana=semana,
+                            promotor=promotor,
+                            nombre_cliente=nombre_cliente,
+                            rfc=rfc_cliente
+                        )
+
+                        detalle += f" | Remoto: {resultado_graph['remote_folder_path']}"
+                        exitosos += 1
+                        resultados_proceso.append({
+                            "Archivo": registro["archivo"],
+                            "Estado": "OK",
+                            "Detalle": detalle
+                        })
+
+                    except GraphStorageError as error:
+                        exitosos += 1
+                        resultados_proceso.append({
+                            "Archivo": registro["archivo"],
+                            "Estado": "Excel OK / Graph falló",
+                            "Detalle": str(error)
+                        })
+
+                except Exception as error:
+                    resultados_proceso.append({
+                        "Archivo": registro["archivo"],
+                        "Estado": "Error",
+                        "Detalle": str(error)
+                    })
+
+            if procesados == 0:
+                st.warning("No hay talones marcados para procesar.")
+            else:
+                st.success(f"Procesados: {procesados} | Exitosos: {exitosos}")
+                st.dataframe(pd.DataFrame(resultados_proceso), use_container_width=True, hide_index=True)
+
+    else:
+        st.info("Sube varios talones del mismo promotor para comenzar la revisión en lote.")
