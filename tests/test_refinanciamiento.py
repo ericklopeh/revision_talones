@@ -19,7 +19,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "12546",
                 "VTA": 58564.00,
-                "PAGADO": 42117.20,
                 "SALDO": 16446.80,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 813.39,
@@ -28,7 +27,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "12547",
                 "VTA": 28693.43,
-                "PAGADO": 20324.52,
                 "SALDO": 8368.91,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 398.52,
@@ -37,7 +35,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "12622",
                 "VTA": 29966.96,
-                "PAGADO": 19978.08,
                 "SALDO": 9988.88,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 416.21,
@@ -46,7 +43,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "12801",
                 "VTA": 22251.39,
-                "PAGADO": 12671.05,
                 "SALDO": 9580.34,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 309.05,
@@ -55,7 +51,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "12719",
                 "VTA": 40994.80,
-                "PAGADO": 26191.02,
                 "SALDO": 14803.78,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 569.37,
@@ -85,7 +80,6 @@ class RefinanciamientoTest(unittest.TestCase):
         facturas = calcular_facturas_refinanciamiento(pd.DataFrame([{
             "FACT": "PRUEBA",
             "VTA": 0,
-            "PAGADO": 100,
             "SALDO": 500,
             "QNAS TOMADAS A CUENTA": 2,
             "ABONO": 50,
@@ -93,6 +87,7 @@ class RefinanciamientoTest(unittest.TestCase):
         }]))
 
         self.assertEqual(facturas.loc[0, "ABONO DE QUINCENAS"], 100)
+        self.assertEqual(facturas.loc[0, "PAGADO"], 0)
         self.assertEqual(facturas.loc[0, "SALDO PENDIENTE"], 400)
         self.assertEqual(facturas.loc[0, "PORCENTAJE PAGADO"], 0)
         self.assertEqual(facturas.loc[0, "PUEDE REFINANCIAR"], "NO")
@@ -120,7 +115,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "SI",
                 "VTA": 1000,
-                "PAGADO": 390,
                 "SALDO": 610,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 100,
@@ -129,7 +123,6 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "NO",
                 "VTA": 1000,
-                "PAGADO": 389,
                 "SALDO": 611,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 200,
@@ -144,6 +137,26 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(resumen["abono_ref"], 100)
         self.assertEqual(resumen["abono_antes"], 300)
         self.assertEqual(resumen["total_abono_nuevo"], 150)
+
+    def test_pagado_manual_se_ignora_y_se_recalcula(self):
+        resultado = calcular_facturas_refinanciamiento(pd.DataFrame([{
+            "FACT": "12546",
+            "VTA": 58564,
+            "PAGADO": 1,
+            "SALDO": 16446.80,
+            "QNAS TOMADAS A CUENTA": 0,
+            "ABONO": 813.39,
+            "EN COBRO": ""
+        }]))
+
+        self.assertEqual(resultado.loc[0, "PAGADO"], 42117.20)
+        self.assertAlmostEqual(
+            resultado.loc[0, "PORCENTAJE PAGADO"],
+            0.719165,
+            places=6
+        )
+        self.assertEqual(resultado.loc[0, "REFINANCIAMIENTO"], 42117.20)
+        self.assertEqual(resultado.loc[0, "PUEDE REFINANCIAR"], "SI")
 
     def test_excel_exportado_tiene_dos_hojas(self):
         resumen = calcular_resumen_refinanciamiento(self.facturas, 0)
@@ -166,6 +179,7 @@ class RefinanciamientoTest(unittest.TestCase):
             ["Facturas", "Resumen Refinanciamiento"]
         )
         self.assertEqual(workbook["Facturas"]["A2"].value, "12546")
+        self.assertEqual(workbook["Facturas"]["C2"].value, 42117.20)
         self.assertEqual(
             workbook["Resumen Refinanciamiento"]["B9"].value,
             2506.54

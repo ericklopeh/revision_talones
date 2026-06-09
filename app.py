@@ -11,7 +11,7 @@ from services.generador_excel import generar_excel_revision
 from services.generador_pdf import generar_pdf_revision
 from services.graph_storage import subir_revision_a_graph, GraphStorageError
 from utils.refinanciamiento import (
-    COLUMNAS_CALCULADAS,
+    COLUMNAS_MANUALES,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
     dataframe_facturas_vacio,
@@ -1513,26 +1513,26 @@ with tab_refinanciamiento:
 
     st.markdown("### 2. Facturas actuales")
     st.caption(
-        "Agrega o elimina filas directamente en la tabla. "
-        "Las columnas sombreadas se calculan automáticamente."
+        "Captura únicamente FACT, VTA, SALDO, quincenas, ABONO y EN COBRO. "
+        "Los resultados aparecen en la tabla calculada inferior."
     )
 
     if "ref_facturas" not in st.session_state:
         st.session_state.ref_facturas = dataframe_facturas_vacio()
+    else:
+        st.session_state.ref_facturas = st.session_state.ref_facturas.reindex(
+            columns=COLUMNAS_MANUALES,
+            fill_value=0
+        )
 
-    facturas_calculadas = calcular_facturas_refinanciamiento(
-        st.session_state.ref_facturas
-    )
     facturas_editadas = st.data_editor(
-        facturas_calculadas,
+        st.session_state.ref_facturas,
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
-        disabled=COLUMNAS_CALCULADAS,
         column_config={
             "FACT": st.column_config.TextColumn("FACT"),
             "VTA": st.column_config.NumberColumn("VTA", format="$ %.2f"),
-            "PAGADO": st.column_config.NumberColumn("PAGADO", format="$ %.2f"),
             "SALDO": st.column_config.NumberColumn("SALDO", format="$ %.2f"),
             "QNAS TOMADAS A CUENTA": st.column_config.NumberColumn(
                 "QNAS TOMADAS A CUENTA",
@@ -1541,41 +1541,32 @@ with tab_refinanciamiento:
                 format="%d"
             ),
             "ABONO": st.column_config.NumberColumn("ABONO", format="$ %.2f"),
-            "ABONO DE QUINCENAS": st.column_config.NumberColumn(
-                "ABONO DE QUINCENAS",
-                format="$ %.2f"
-            ),
-            "SALDO PENDIENTE": st.column_config.NumberColumn(
-                "SALDO PENDIENTE",
-                format="$ %.2f"
-            ),
-            "PORCENTAJE PAGADO": st.column_config.NumberColumn(
-                "PORCENTAJE PAGADO",
-                format="percent"
-            ),
-            "REFINANCIAMIENTO": st.column_config.NumberColumn(
-                "REFINANCIAMIENTO",
-                format="$ %.2f"
-            ),
-            "PUEDE REFINANCIAR": st.column_config.TextColumn(
-                "PUEDE REFINANCIAR"
-            )
+            "EN COBRO": st.column_config.TextColumn("EN COBRO")
         },
         key="ref_data_editor"
     )
-    st.session_state.ref_facturas = facturas_editadas[
-        [
-            "FACT",
-            "VTA",
-            "PAGADO",
-            "SALDO",
-            "QNAS TOMADAS A CUENTA",
-            "ABONO",
-            "EN COBRO"
-        ]
-    ].copy()
+    st.session_state.ref_facturas = facturas_editadas.copy()
 
     facturas_resultado = calcular_facturas_refinanciamiento(facturas_editadas)
+    st.markdown("#### Cálculo por factura")
+    st.caption(
+        "PAGADO y las demás columnas se recalculan automáticamente "
+        "a partir de los datos capturados."
+    )
+    st.dataframe(
+        facturas_resultado.style.format({
+            "VTA": "${:,.2f}",
+            "PAGADO": "${:,.2f}",
+            "SALDO": "${:,.2f}",
+            "ABONO": "${:,.2f}",
+            "ABONO DE QUINCENAS": "${:,.2f}",
+            "SALDO PENDIENTE": "${:,.2f}",
+            "PORCENTAJE PAGADO": "{:.2%}",
+            "REFINANCIAMIENTO": "${:,.2f}"
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
     resumen_refinanciamiento = calcular_resumen_refinanciamiento(
         facturas_resultado,
         aumento_descuento

@@ -11,7 +11,6 @@ from openpyxl.utils import get_column_letter
 COLUMNAS_MANUALES = [
     "FACT",
     "VTA",
-    "PAGADO",
     "SALDO",
     "QNAS TOMADAS A CUENTA",
     "ABONO",
@@ -19,6 +18,7 @@ COLUMNAS_MANUALES = [
 ]
 
 COLUMNAS_CALCULADAS = [
+    "PAGADO",
     "ABONO DE QUINCENAS",
     "SALDO PENDIENTE",
     "PORCENTAJE PAGADO",
@@ -97,7 +97,6 @@ def dataframe_facturas_vacio(filas: int = 5) -> pd.DataFrame:
         {
             "FACT": "",
             "VTA": 0.0,
-            "PAGADO": 0.0,
             "SALDO": 0.0,
             "QNAS TOMADAS A CUENTA": 0,
             "ABONO": 0.0,
@@ -119,7 +118,6 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
 
     columnas_numericas = [
         "VTA",
-        "PAGADO",
         "SALDO",
         "QNAS TOMADAS A CUENTA",
         "ABONO"
@@ -127,6 +125,12 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     for columna in columnas_numericas:
         resultado[columna] = resultado[columna].map(convertir_numero)
 
+    resultado["PAGADO"] = 0.0
+    tiene_venta = resultado["VTA"] > 0
+    resultado.loc[tiene_venta, "PAGADO"] = (
+        resultado.loc[tiene_venta, "VTA"]
+        - resultado.loc[tiene_venta, "SALDO"]
+    ).round(2)
     resultado["ABONO DE QUINCENAS"] = (
         resultado["QNAS TOMADAS A CUENTA"] * resultado["ABONO"]
     ).round(2)
@@ -134,7 +138,6 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         resultado["SALDO"] - resultado["ABONO DE QUINCENAS"]
     ).round(2)
     resultado["PORCENTAJE PAGADO"] = 0.0
-    tiene_venta = resultado["VTA"] > 0
     resultado.loc[tiene_venta, "PORCENTAJE PAGADO"] = (
         resultado.loc[tiene_venta, "PAGADO"]
         / resultado.loc[tiene_venta, "VTA"]
@@ -154,7 +157,21 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         "PORCENTAJE PAGADO"
     ].map(lambda porcentaje: "SI" if porcentaje >= 0.39 else "NO")
 
-    return resultado[COLUMNAS_MANUALES + COLUMNAS_CALCULADAS]
+    columnas_salida = [
+        "FACT",
+        "VTA",
+        "PAGADO",
+        "SALDO",
+        "QNAS TOMADAS A CUENTA",
+        "ABONO",
+        "ABONO DE QUINCENAS",
+        "SALDO PENDIENTE",
+        "EN COBRO",
+        "PORCENTAJE PAGADO",
+        "REFINANCIAMIENTO",
+        "PUEDE REFINANCIAR"
+    ]
+    return resultado[columnas_salida]
 
 
 def filtrar_facturas_capturadas(df: pd.DataFrame) -> pd.DataFrame:
@@ -165,7 +182,6 @@ def filtrar_facturas_capturadas(df: pd.DataFrame) -> pd.DataFrame:
 
     columnas_numericas = [
         "VTA",
-        "PAGADO",
         "SALDO",
         "QNAS TOMADAS A CUENTA",
         "ABONO"
@@ -260,7 +276,13 @@ def generar_excel_refinanciamiento(
     moneda = '$ #,##0.00;-$ #,##0.00;$ -'
     porcentaje = "0.00%"
 
-    columnas_facturas = COLUMNAS_MANUALES[:-1] + [
+    columnas_facturas = [
+        "FACT",
+        "VTA",
+        "PAGADO",
+        "SALDO",
+        "QNAS TOMADAS A CUENTA",
+        "ABONO",
         "ABONO DE QUINCENAS",
         "SALDO PENDIENTE",
         "EN COBRO",
