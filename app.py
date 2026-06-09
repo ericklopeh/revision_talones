@@ -1558,7 +1558,11 @@ with tab_refinanciamiento:
         },
         key="refi_facturas_editor"
     )
-    st.session_state[estado_facturas] = facturas_editadas.copy()
+
+    if st.button("Limpiar facturas", key="refi_limpiar_facturas"):
+        st.session_state.pop(estado_facturas, None)
+        st.session_state.pop("refi_facturas_editor", None)
+        st.rerun()
 
     facturas_resultado = calcular_facturas_refinanciamiento(facturas_editadas)
     st.markdown("### 3. Tabla calculada por factura")

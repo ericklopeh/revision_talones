@@ -153,11 +153,19 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(resumen["total_saldo_pendiente"], 59188.71)
         self.assertEqual(
             resumen["simulacion"][72]["VENTA POSIBLE"],
-            180470.88
+            121282.17
         )
         self.assertEqual(
             resumen["simulacion"][34]["TOTAL SALDO NUEVO"],
-            144411.07
+            85222.36
+        )
+        self.assertEqual(
+            resumen["simulacion"][60]["VENTA POSIBLE"],
+            91203.69
+        )
+        self.assertEqual(
+            resumen["simulacion"][46]["TOTAL ADEUDO CLIENTE"],
+            115300.84
         )
 
     def test_umbral_de_refinanciamiento_y_aumento(self):
@@ -237,6 +245,10 @@ class RefinanciamientoTest(unittest.TestCase):
         )
         self.assertEqual(
             workbook["Resumen Refinanciamiento"]["B22"].value,
+            121282.17
+        )
+        self.assertEqual(
+            workbook["Resumen Refinanciamiento"]["B23"].value,
             180470.88
         )
 

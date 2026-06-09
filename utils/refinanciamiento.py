@@ -224,8 +224,11 @@ def calcular_resumen_refinanciamiento(
 
     simulacion = {}
     for plazo in PLAZOS_REFINANCIAMIENTO:
-        venta_posible = round(total_abono_nuevo * plazo, 2)
-        total_saldo_nuevo = round(total_saldo_pendiente + venta_posible, 2)
+        total_saldo_nuevo = round(total_abono_nuevo * plazo, 2)
+        venta_posible = round(
+            total_saldo_nuevo - total_saldo_pendiente,
+            2
+        )
         simulacion[plazo] = {
             "SALDO PENDIENTE": total_saldo_pendiente,
             "VENTA POSIBLE": venta_posible,
