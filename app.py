@@ -10,6 +10,15 @@ from services.calculadora import calcular_revision_talon
 from services.generador_excel import generar_excel_revision
 from services.generador_pdf import generar_pdf_revision
 from services.graph_storage import subir_revision_a_graph, GraphStorageError
+from utils.refinanciamiento import (
+    COLUMNAS_CALCULADAS,
+    calcular_facturas_refinanciamiento,
+    calcular_resumen_refinanciamiento,
+    dataframe_facturas_vacio,
+    dataframe_simulacion,
+    extraer_fecha_edad_desde_rfc,
+    generar_excel_refinanciamiento
+)
 
 
 st.set_page_config(
@@ -649,7 +658,16 @@ st.caption(
     "Lectura del talón, cálculo de liquidez y generación de evidencia de revisión."
 )
 
-tab_individual, tab_lote = st.tabs(["Un talón", "Varios talones (lote)"])
+tab_revision, tab_refinanciamiento = st.tabs([
+    "Revisión de Talón",
+    "Refinanciamiento"
+])
+
+with tab_revision:
+    tab_individual, tab_lote = st.tabs([
+        "Un talón",
+        "Varios talones (lote)"
+    ])
 
 
 # =============================================================================
@@ -1400,3 +1418,267 @@ with tab_lote:
 
     else:
         st.info("Sube uno o varios talones del mismo promotor para comenzar.")
+
+
+with tab_refinanciamiento:
+    st.markdown("## Calculadora de refinanciamiento")
+    st.caption(
+        "Captura las facturas actuales, valida el porcentaje pagado y simula "
+        "el nuevo saldo por plazo."
+    )
+
+    st.markdown("### 1. Datos del cliente")
+    with st.container(border=True):
+        col_fecha, col_cliente = st.columns([1, 2])
+
+        with col_fecha:
+            fecha_refinanciamiento = st.date_input(
+                "Fecha",
+                value=datetime.now().date(),
+                format="DD/MM/YYYY",
+                key="ref_fecha"
+            )
+
+        with col_cliente:
+            cliente_refinanciamiento = st.text_input(
+                "Cliente",
+                key="ref_cliente"
+            )
+
+        col_rfc, col_quinquenio, col_aumento = st.columns(3)
+
+        with col_rfc:
+            rfc_nac = st.text_input(
+                "RFC/NAC",
+                placeholder="J860901UT6",
+                key="ref_rfc_nac"
+            )
+
+        with col_quinquenio:
+            quinquenio = st.number_input(
+                "Quinquenio",
+                min_value=0,
+                value=0,
+                step=1,
+                key="ref_quinquenio"
+            )
+
+        with col_aumento:
+            aumento_descuento = st.number_input(
+                "Liquidez / aumento en descuento",
+                value=0.0,
+                step=100.0,
+                format="%.2f",
+                key="ref_aumento_descuento"
+            )
+
+        forzar_1900 = st.checkbox(
+            "Forzar siglo 1900",
+            value=True,
+            help=(
+                "Activado: 01 se interpreta como 1901. "
+                "Desactivado: se elige 1900 o 2000 según el año actual."
+            ),
+            key="ref_forzar_1900"
+        )
+        nacimiento = extraer_fecha_edad_desde_rfc(
+            rfc_nac,
+            forzar_1900=forzar_1900
+        )
+
+        col_nacimiento, col_edad = st.columns(2)
+        with col_nacimiento:
+            st.metric(
+                "Fecha de nacimiento",
+                value=(
+                    nacimiento["fecha_nacimiento"].strftime("%d/%m/%Y")
+                    if nacimiento["fecha_nacimiento"]
+                    else "No disponible"
+                )
+            )
+        with col_edad:
+            st.metric(
+                "Edad",
+                value=(
+                    str(nacimiento["edad"])
+                    if nacimiento["edad"] is not None
+                    else "No disponible"
+                )
+            )
+
+        if rfc_nac and nacimiento["fecha_nacimiento"] is None:
+            st.warning(
+                "No se pudo calcular la edad desde el RFC/NAC. Verifica el dato."
+            )
+
+    st.markdown("### 2. Facturas actuales")
+    st.caption(
+        "Agrega o elimina filas directamente en la tabla. "
+        "Las columnas sombreadas se calculan automáticamente."
+    )
+
+    if "ref_facturas" not in st.session_state:
+        st.session_state.ref_facturas = dataframe_facturas_vacio()
+
+    facturas_calculadas = calcular_facturas_refinanciamiento(
+        st.session_state.ref_facturas
+    )
+    facturas_editadas = st.data_editor(
+        facturas_calculadas,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        disabled=COLUMNAS_CALCULADAS,
+        column_config={
+            "FACT": st.column_config.TextColumn("FACT"),
+            "VTA": st.column_config.NumberColumn("VTA", format="$ %.2f"),
+            "PAGADO": st.column_config.NumberColumn("PAGADO", format="$ %.2f"),
+            "SALDO": st.column_config.NumberColumn("SALDO", format="$ %.2f"),
+            "QNAS TOMADAS A CUENTA": st.column_config.NumberColumn(
+                "QNAS TOMADAS A CUENTA",
+                min_value=0,
+                step=1,
+                format="%d"
+            ),
+            "ABONO": st.column_config.NumberColumn("ABONO", format="$ %.2f"),
+            "ABONO DE QUINCENAS": st.column_config.NumberColumn(
+                "ABONO DE QUINCENAS",
+                format="$ %.2f"
+            ),
+            "SALDO PENDIENTE": st.column_config.NumberColumn(
+                "SALDO PENDIENTE",
+                format="$ %.2f"
+            ),
+            "PORCENTAJE PAGADO": st.column_config.NumberColumn(
+                "PORCENTAJE PAGADO",
+                format="percent"
+            ),
+            "REFINANCIAMIENTO": st.column_config.NumberColumn(
+                "REFINANCIAMIENTO",
+                format="$ %.2f"
+            ),
+            "PUEDE REFINANCIAR": st.column_config.TextColumn(
+                "PUEDE REFINANCIAR"
+            )
+        },
+        key="ref_data_editor"
+    )
+    st.session_state.ref_facturas = facturas_editadas[
+        [
+            "FACT",
+            "VTA",
+            "PAGADO",
+            "SALDO",
+            "QNAS TOMADAS A CUENTA",
+            "ABONO",
+            "EN COBRO"
+        ]
+    ].copy()
+
+    facturas_resultado = calcular_facturas_refinanciamiento(facturas_editadas)
+    resumen_refinanciamiento = calcular_resumen_refinanciamiento(
+        facturas_resultado,
+        aumento_descuento
+    )
+
+    st.markdown("### 3. Totales principales")
+    col_total_vta, col_total_pagado, col_total_saldo = st.columns(3)
+    with col_total_vta:
+        st.metric(
+            "Total VTA",
+            formato_moneda(resumen_refinanciamiento["total_vta"])
+        )
+    with col_total_pagado:
+        st.metric(
+            "Total pagado",
+            formato_moneda(resumen_refinanciamiento["total_pagado"])
+        )
+    with col_total_saldo:
+        st.metric(
+            "Total saldo",
+            formato_moneda(resumen_refinanciamiento["total_saldo"])
+        )
+
+    col_total_abono, col_abono_qnas, col_saldo_pendiente, col_total_ref = (
+        st.columns(4)
+    )
+    with col_total_abono:
+        st.metric(
+            "Total abono",
+            formato_moneda(resumen_refinanciamiento["total_abono"])
+        )
+    with col_abono_qnas:
+        st.metric(
+            "Abono de quincenas",
+            formato_moneda(
+                resumen_refinanciamiento["total_abono_quincenas"]
+            )
+        )
+    with col_saldo_pendiente:
+        st.metric(
+            "Saldo pendiente",
+            formato_moneda(
+                resumen_refinanciamiento["total_saldo_pendiente"]
+            )
+        )
+    with col_total_ref:
+        st.metric(
+            "Refinanciamiento",
+            formato_moneda(
+                resumen_refinanciamiento["total_refinanciamiento"]
+            )
+        )
+
+    st.markdown("### 4. Resumen de refinanciamiento")
+    with st.container(border=True):
+        col_abono_ref, col_abono_antes, col_abono_nuevo = st.columns(3)
+        with col_abono_ref:
+            st.metric(
+                "ABONO REF",
+                formato_moneda(resumen_refinanciamiento["abono_ref"])
+            )
+        with col_abono_antes:
+            st.metric(
+                "ABONO ANTES",
+                formato_moneda(resumen_refinanciamiento["abono_antes"])
+            )
+        with col_abono_nuevo:
+            st.metric(
+                "TOTAL ABONO NUEVO",
+                formato_moneda(
+                    resumen_refinanciamiento["total_abono_nuevo"]
+                )
+            )
+
+        simulacion_df = dataframe_simulacion(resumen_refinanciamiento)
+        st.dataframe(
+            simulacion_df.style.format("${:,.2f}"),
+            use_container_width=True
+        )
+
+    st.markdown("### 5. Exportar")
+    datos_cliente_refinanciamiento = {
+        "fecha": fecha_refinanciamiento,
+        "cliente": cliente_refinanciamiento,
+        "rfc_nac": rfc_nac,
+        "fecha_nacimiento": nacimiento["fecha_nacimiento"],
+        "edad": nacimiento["edad"],
+        "quinquenio": quinquenio
+    }
+    excel_refinanciamiento = generar_excel_refinanciamiento(
+        facturas=facturas_resultado,
+        resumen=resumen_refinanciamiento,
+        datos_cliente=datos_cliente_refinanciamiento
+    )
+    nombre_cliente_ref = (
+        cliente_refinanciamiento.strip().upper().replace(" ", "_")
+        or "CLIENTE"
+    )
+    st.download_button(
+        "Exportar refinanciamiento a Excel",
+        data=excel_refinanciamiento,
+        file_name=f"REFINANCIAMIENTO_{nombre_cliente_ref}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        key="ref_descargar_excel"
+    )
