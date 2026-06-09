@@ -272,7 +272,8 @@ def subir_revision_a_graph(
     semana: int,
     promotor: str,
     nombre_cliente: str,
-    rfc: str
+    rfc: str,
+    ruta_revision_pdf: str = None
 ) -> dict:
     site_id = get_site_id()
     drive_id = get_drive_id(site_id)
@@ -319,8 +320,22 @@ def subir_revision_a_graph(
         remote_file_name=excel_name
     )
 
+    revision_pdf_web_url = None
+
+    if ruta_revision_pdf:
+        revision_pdf_name = f"REVISION_{cliente_file}_{promotor_file}.pdf"
+        revision_pdf_result = upload_small_file(
+            site_id=site_id,
+            drive_id=drive_id,
+            remote_folder_path=remote_folder_path,
+            local_file_path=ruta_revision_pdf,
+            remote_file_name=revision_pdf_name
+        )
+        revision_pdf_web_url = revision_pdf_result.get("webUrl")
+
     return {
         "remote_folder_path": remote_folder_path,
         "pdf_web_url": pdf_web_url,
-        "excel_web_url": excel_result.get("webUrl")
+        "excel_web_url": excel_result.get("webUrl"),
+        "revision_pdf_web_url": revision_pdf_web_url
     }

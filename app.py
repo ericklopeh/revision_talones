@@ -8,6 +8,7 @@ import pandas as pd
 from services.extractor_pdf import extraer_datos_talon, extraer_datos_talon_imagen
 from services.calculadora import calcular_revision_talon
 from services.generador_excel import generar_excel_revision
+from services.generador_pdf import generar_pdf_revision
 from services.graph_storage import subir_revision_a_graph, GraphStorageError
 
 
@@ -52,9 +53,90 @@ def formato_moneda(valor: float) -> str:
     return f"${valor:,.2f}"
 
 
+def nueva_cuenta_terminada(cuenta_id: int) -> dict:
+    return {
+        "_id": cuenta_id,
+        "qna_termina": "",
+        "saldo_liberado": 0.0,
+        "observacion": "",
+        "sumar_a_liquidez": True
+    }
+
+
+def normalizar_cuentas_terminadas(cuentas: list) -> list:
+    cuentas = cuentas or []
+    siguiente_id = 1
+
+    for cuenta in cuentas:
+        if "_id" not in cuenta:
+            cuenta["_id"] = siguiente_id
+
+        siguiente_id = max(siguiente_id, int(cuenta["_id"]) + 1)
+        cuenta.setdefault("qna_termina", "")
+        cuenta.setdefault("saldo_liberado", 0.0)
+        cuenta.setdefault("observacion", "")
+        cuenta.setdefault("sumar_a_liquidez", True)
+
+    return cuentas
+
+
+def cuentas_por_tipo(cuentas: list, sumar_a_liquidez: bool) -> list:
+    return [
+        cuenta for cuenta in cuentas
+        if bool(cuenta.get("sumar_a_liquidez", False)) == sumar_a_liquidez
+    ]
+
+
+def lineas_cuentas_para_mensaje(cuentas: list) -> list[str]:
+    lineas = []
+
+    for cuenta in cuentas:
+        qna = str(cuenta.get("qna_termina", "")).strip() or "Sin QNA"
+        monto = float(cuenta.get("saldo_liberado", 0) or 0)
+        observacion = str(cuenta.get("observacion", "")).strip()
+        linea = f"- QNA {qna}: {formato_moneda(monto)}"
+
+        if observacion:
+            linea += f" ({observacion})"
+
+        lineas.append(linea)
+
+    return lineas
+
+
 def generar_resultado_liquidez(revision: dict, tiene_programado: str) -> str:
     liquidez_final = revision["liquidez_final"]
     programado = revision["programado"]
+    cuentas_terminadas = revision.get("cuentas_terminadas", [])
+
+    if cuentas_terminadas:
+        if (
+            revision.get("liquidez_talon", 0) < 0
+            and revision.get("liquidez_antes_liberacion", 0) < 0
+            and liquidez_final > 0
+            and revision.get("total_saldo_liberado", 0) > 0
+        ):
+            resultado = (
+                "Tenía sobregiro, pero queda con liquidez por cuentas terminadas: "
+                f"{formato_moneda(liquidez_final)}."
+            )
+        elif liquidez_final > 0:
+            resultado = (
+                f"Tiene liquidez disponible de "
+                f"{formato_moneda(liquidez_final)}."
+            )
+        elif liquidez_final < 0:
+            resultado = (
+                f"No tiene liquidez. Sobregiro final de "
+                f"{formato_moneda(liquidez_final)}."
+            )
+        else:
+            resultado = "Queda sin liquidez disponible ni sobregiro."
+
+        if tiene_programado == "Sí" and programado > 0:
+            resultado += f" Tiene un programado por {formato_moneda(programado)}."
+
+        return resultado
 
     if liquidez_final > 0:
         if tiene_programado == "Sí" and programado > 0:
@@ -85,8 +167,10 @@ def generar_mensaje_vendedor(datos: dict, revision: dict, tiene_programado: str)
         revision=revision,
         tiene_programado=tiene_programado
     )
+    cuentas = revision.get("cuentas_terminadas", [])
 
-    texto = f"""Se realizó la revisión del talón correspondiente al cliente:
+    if not cuentas:
+        return f"""Se realizó la revisión del talón correspondiente al cliente:
 
 Cliente: {nombre}
 RFC: {rfc}
@@ -94,7 +178,37 @@ RFC: {rfc}
 Resultado de la revisión:
 {resultado_liquidez}"""
 
-    return texto
+    cuentas_liberadas = cuentas_por_tipo(cuentas, True)
+    cuentas_observadas = cuentas_por_tipo(cuentas, False)
+    liquidez_talon = revision.get("liquidez_talon", 0)
+    estado_talon = (
+        f"liquidez de {formato_moneda(liquidez_talon)}"
+        if liquidez_talon >= 0
+        else f"sobregiro de {formato_moneda(liquidez_talon)}"
+    )
+    bloques = [
+        f"El cliente {nombre} presenta {estado_talon} en talón.",
+        f"RFC: {rfc}"
+    ]
+
+    if cuentas_liberadas:
+        bloques.append(
+            "Adicionalmente, cuenta con saldos liberados por cuentas que terminan:\n"
+            + "\n".join(lineas_cuentas_para_mensaje(cuentas_liberadas))
+            + "\n\nTotal liberado: "
+            + formato_moneda(revision.get("total_saldo_liberado", 0))
+        )
+
+    if cuentas_observadas:
+        bloques.append(
+            "Cuentas registradas solo como observación, sin sumar a liquidez:\n"
+            + "\n".join(lineas_cuentas_para_mensaje(cuentas_observadas))
+            + "\n\nTotal solo observado: "
+            + formato_moneda(revision.get("total_solo_observado", 0))
+        )
+
+    bloques.append(f"Considerando lo anterior, {resultado_liquidez.lower()}")
+    return "\n\n".join(bloques)
 
 
 def importe_detectado(codigos: dict, cod: str, equiv: str) -> float:
@@ -137,7 +251,12 @@ def calcular_revision_desde_registro(registro: dict) -> dict:
         codigos_extraidos=codigos_manual,
         descuentos_talon=float(registro["descuentos"]),
         abono_extra=float(registro.get("abono_extra", 0)),
-        programado=float(registro.get("programado", 0))
+        programado=float(registro.get("programado", 0)),
+        cuentas_terminadas=(
+            registro.get("cuentas_terminadas", [])
+            if registro.get("tiene_cuentas_terminadas", False)
+            else []
+        )
     )
 
 
@@ -170,12 +289,18 @@ def calcular_revision_consolidada(registros: list) -> Optional[dict]:
     total_descuentos = sum(float(r["descuentos"]) for r in activos)
     total_abono = sum(float(r.get("abono_extra", 0)) for r in activos)
     total_programado = sum(float(r.get("programado", 0)) for r in activos)
+    cuentas_terminadas = []
+
+    for registro in activos:
+        if registro.get("tiene_cuentas_terminadas", False):
+            cuentas_terminadas.extend(registro.get("cuentas_terminadas", []))
 
     return calcular_revision_talon(
         codigos_extraidos=codigos,
         descuentos_talon=total_descuentos,
         abono_extra=total_abono,
-        programado=total_programado
+        programado=total_programado,
+        cuentas_terminadas=cuentas_terminadas
     )
 
 
@@ -195,6 +320,32 @@ def generar_mensaje_vendedor_lote(promotor: str, registros: list, revision: dict
         )
 
     clientes_texto = "\n".join(lineas_clientes)
+    cuentas = revision.get("cuentas_terminadas", [])
+    cuentas_liberadas = cuentas_por_tipo(cuentas, True)
+    cuentas_observadas = cuentas_por_tipo(cuentas, False)
+    bloques_cuentas = []
+
+    if cuentas_liberadas:
+        bloques_cuentas.append(
+            "Saldos liberados:\n"
+            + "\n".join(lineas_cuentas_para_mensaje(cuentas_liberadas))
+            + f"\nTotal liberado: "
+            + formato_moneda(revision.get("total_saldo_liberado", 0))
+        )
+
+    if cuentas_observadas:
+        bloques_cuentas.append(
+            "Solo observadas:\n"
+            + "\n".join(lineas_cuentas_para_mensaje(cuentas_observadas))
+            + f"\nTotal observado: "
+            + formato_moneda(revision.get("total_solo_observado", 0))
+        )
+
+    bloque_cuentas = (
+        "\n\n" + "\n\n".join(bloques_cuentas)
+        if bloques_cuentas
+        else ""
+    )
 
     if cantidad == 1:
         intro = f"Se realizó la revisión del talón correspondiente al promotor {promotor}:"
@@ -207,7 +358,7 @@ def generar_mensaje_vendedor_lote(promotor: str, registros: list, revision: dict
     return f"""{intro}
 
 Clientes revisados:
-{clientes_texto}
+{clientes_texto}{bloque_cuentas}
 
 Resultado total de la revisión:
 {resultado_total}"""
@@ -216,51 +367,49 @@ Resultado total de la revisión:
 def render_resumen_revision(revision: dict, tiene_programado: str, key_prefix: str = ""):
     resultado_liquidez = generar_resultado_liquidez(revision, tiene_programado)
 
-    st.subheader("Cálculo de revisión")
+    with st.container(border=True):
+        st.caption(
+            "Liquidez del talón + apoyo adicional + saldo liberado "
+            "- programado = liquidez final"
+        )
 
-    col7, col8, col9 = st.columns(3)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Liquidez del talón", formato_moneda(revision["liquidez_talon"]))
+        with col2:
+            st.metric("Apoyo adicional", formato_moneda(revision["abono_extra"]))
+        with col3:
+            st.metric(
+                "Saldo liberado",
+                formato_moneda(revision["total_saldo_liberado"])
+            )
 
-    with col7:
-        st.metric("Ingresos revisión", formato_moneda(revision["ingresos"]))
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            st.metric("Programado", formato_moneda(revision["programado"]))
+        with col5:
+            st.metric(
+                "Solo observado",
+                formato_moneda(revision.get("total_solo_observado", 0))
+            )
+        with col6:
+            st.metric("Liquidez final", formato_moneda(revision["liquidez_final"]))
 
-    with col8:
-        st.metric("Descuentos", formato_moneda(revision["descuentos"]))
-
-    with col9:
-        st.metric("Saldo al 100", formato_moneda(revision["saldo_100"]))
-
-    col10, col11, col12 = st.columns(3)
-
-    with col10:
-        st.metric("Total para venta 70%", formato_moneda(revision["total_para_venta_70"]))
-
-    with col11:
-        st.metric("Saldo al 70%", formato_moneda(revision["saldo_70"]))
-
-    with col12:
-        st.metric("Liquidez final", formato_moneda(revision["liquidez_final"]))
-
-    st.info(resultado_liquidez)
+        if revision["liquidez_final"] > 0:
+            st.success(resultado_liquidez)
+        elif revision["liquidez_final"] < 0:
+            st.error(resultado_liquidez)
+        else:
+            st.info(resultado_liquidez)
 
     return resultado_liquidez
 
 
 def render_mensaje_vendedor(mensaje: str, key_prefix: str = ""):
-    st.subheader("Mensaje para vendedor")
-
-    mensaje_html = mensaje.replace("\n", "<br>")
-
-    st.markdown(
-        f"""
-        <div style="font-size:1.5rem; font-weight:700; line-height:1.7;">
-        {mensaje_html}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
+    st.caption("Usa el botón de copia del bloque para llevar el texto al portapapeles.")
+    st.code(mensaje, language="text")
     st.text_area(
-        "Texto formal para copiar y enviar",
+        "Editar mensaje antes de enviarlo",
         value=mensaje,
         height=220,
         key=f"{key_prefix}mensaje_area"
@@ -300,6 +449,8 @@ def procesar_archivo_lote(archivo) -> dict:
             "liquido": 0.0,
             "abono_extra": 0.0,
             "programado": 0.0,
+            "cuentas_terminadas": [],
+            "tiene_cuentas_terminadas": False,
             "codigos": {},
             "texto_original": "",
             "error": str(error)
@@ -316,6 +467,8 @@ def procesar_archivo_lote(archivo) -> dict:
         "liquido": float(datos.get("liquido", 0)),
         "abono_extra": 0.0,
         "programado": 0.0,
+        "cuentas_terminadas": [],
+        "tiene_cuentas_terminadas": False,
         "codigos": datos.get("codigos", {}),
         "texto_original": datos.get("texto_original", ""),
         "error": None
@@ -362,8 +515,139 @@ def render_ajustes_revision(key_prefix: str = ""):
     return promotor, qna, int(anio), int(semana)
 
 
-st.title("📄 Revisión de Talones")
-st.caption("Sistema para leer talón, calcular liquidez, generar mensaje y crear Excel de revisión.")
+def render_cuentas_terminadas(
+    cuentas: list,
+    tiene_cuentas: bool,
+    key_prefix: str
+) -> tuple[list, bool]:
+    nivel_titulo = "### 5." if key_prefix == "ind_" else "####"
+    st.markdown(
+        f"{nivel_titulo} Cuentas que terminan / saldo que se libera"
+    )
+    st.caption(
+        "Registra las cuentas que concluyen y decide cuáles afectan la liquidez."
+    )
+
+    respuesta = st.selectbox(
+        "¿Tiene cuentas que terminan?",
+        ["No", "Sí"],
+        index=1 if tiene_cuentas else 0,
+        key=f"{key_prefix}tiene_cuentas_terminadas"
+    )
+    tiene_cuentas = respuesta == "Sí"
+    cuentas = normalizar_cuentas_terminadas(cuentas)
+
+    if not tiene_cuentas:
+        return cuentas, False
+
+    if not cuentas:
+        cuentas.append(nueva_cuenta_terminada(1))
+
+    cuenta_a_eliminar = None
+
+    for indice, cuenta in enumerate(cuentas):
+        cuenta_id = cuenta["_id"]
+        with st.container(border=True):
+            st.markdown(f"**Cuenta terminada {indice + 1}**")
+            col_qna, col_monto, col_suma = st.columns([1.2, 1.2, 1])
+
+            with col_qna:
+                cuenta["qna_termina"] = st.text_input(
+                    "QNA en que termina",
+                    value=str(cuenta.get("qna_termina", "")),
+                    placeholder="16-2026",
+                    key=f"{key_prefix}cuenta_{cuenta_id}_qna"
+                )
+
+            with col_monto:
+                cuenta["saldo_liberado"] = st.number_input(
+                    "Saldo que libera",
+                    min_value=0.0,
+                    value=float(cuenta.get("saldo_liberado", 0)),
+                    step=100.0,
+                    format="%.2f",
+                    key=f"{key_prefix}cuenta_{cuenta_id}_monto"
+                )
+
+            with col_suma:
+                cuenta["sumar_a_liquidez"] = st.checkbox(
+                    "Sumar a liquidez",
+                    value=bool(cuenta.get("sumar_a_liquidez", True)),
+                    key=f"{key_prefix}cuenta_{cuenta_id}_sumar"
+                )
+
+            col_observacion, col_eliminar = st.columns([4, 1])
+            with col_observacion:
+                cuenta["observacion"] = st.text_input(
+                    "Observación (opcional)",
+                    value=str(cuenta.get("observacion", "")),
+                    key=f"{key_prefix}cuenta_{cuenta_id}_observacion"
+                )
+
+            with col_eliminar:
+                st.write("")
+                if st.button(
+                    "Eliminar",
+                    key=f"{key_prefix}cuenta_{cuenta_id}_eliminar"
+                ):
+                    cuenta_a_eliminar = cuenta_id
+
+    if cuenta_a_eliminar is not None:
+        cuentas[:] = [
+            cuenta for cuenta in cuentas
+            if cuenta["_id"] != cuenta_a_eliminar
+        ]
+        st.rerun()
+
+    if st.button(
+        "+ Agregar otra cuenta",
+        key=f"{key_prefix}agregar_cuenta"
+    ):
+        siguiente_id = max(
+            (int(cuenta["_id"]) for cuenta in cuentas),
+            default=0
+        ) + 1
+        cuentas.append(nueva_cuenta_terminada(siguiente_id))
+        st.rerun()
+
+    total = sum(
+        float(cuenta.get("saldo_liberado", 0) or 0)
+        for cuenta in cuentas
+        if cuenta.get("sumar_a_liquidez", False)
+    )
+    total_observado = sum(
+        float(cuenta.get("saldo_liberado", 0) or 0)
+        for cuenta in cuentas
+        if not cuenta.get("sumar_a_liquidez", False)
+    )
+    col_total, col_observado = st.columns(2)
+    with col_total:
+        st.success(f"Total que sí se suma: {formato_moneda(total)}")
+    with col_observado:
+        st.info(f"Total solo observado: {formato_moneda(total_observado)}")
+
+    return cuentas, True
+
+
+st.markdown(
+    """
+    <style>
+    .block-container {max-width: 1180px; padding-top: 2rem; padding-bottom: 3rem;}
+    div[data-testid="stMetric"] {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 0.8rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.title("Sistema de revisión de talones")
+st.caption(
+    "Lectura del talón, cálculo de liquidez y generación de evidencia de revisión."
+)
 
 tab_individual, tab_lote = st.tabs(["Un talón", "Varios talones (lote)"])
 
@@ -373,6 +657,7 @@ tab_individual, tab_lote = st.tabs(["Un talón", "Varios talones (lote)"])
 # =============================================================================
 
 with tab_individual:
+    st.markdown("### 1. Subir talón")
     archivo_pdf = st.file_uploader(
         "Sube un talón en PDF o imagen (JPG/PNG)",
         type=["pdf", "jpg", "jpeg", "png"],
@@ -427,7 +712,8 @@ with tab_individual:
         st.info("Captura manual activada. Llena los campos a mano.")
 
     if datos is not None:
-        st.subheader("Datos del talón (editables)")
+        st.divider()
+        st.markdown("### 2. Datos del cliente")
         st.caption(
             "Los valores se precargan con lo detectado. "
             "Corrige lo que haga falta; el cálculo se actualiza al instante."
@@ -448,6 +734,7 @@ with tab_individual:
                 key="ind_fecha"
             )
 
+        st.markdown("### 3. Importes del talón")
         col4, col5, col6 = st.columns(3)
 
         with col4:
@@ -489,7 +776,7 @@ with tab_individual:
         }
 
         st.divider()
-        st.subheader("Ajustes para revisión")
+        st.markdown("### 4. Ajustes para revisión")
         promotor, qna, anio, semana = render_ajustes_revision("ind_")
 
         col_a, col_b, col_c = st.columns(3)
@@ -533,26 +820,44 @@ with tab_individual:
                     key="ind_programado_disabled"
                 )
 
-        st.subheader("Importes por código (editables)")
-        st.caption(
-            "Se precargan con lo detectado. Corrige o captura los importes a mano "
-            "si la lectura falló."
+        if "ind_cuentas_terminadas" not in st.session_state:
+            st.session_state.ind_cuentas_terminadas = []
+
+        cuentas_terminadas, tiene_cuentas_terminadas = render_cuentas_terminadas(
+            cuentas=st.session_state.ind_cuentas_terminadas,
+            tiene_cuentas=st.session_state.get(
+                "ind_cuentas_habilitadas",
+                False
+            ),
+            key_prefix="ind_"
         )
+        st.session_state.ind_cuentas_terminadas = cuentas_terminadas
+        st.session_state.ind_cuentas_habilitadas = tiene_cuentas_terminadas
 
+        st.markdown("### 6. Importes por código")
         codigos_manual = {}
-        columnas_codigos = st.columns(4)
 
-        for indice, (cod, equiv) in enumerate(CODIGOS_FORMATO):
-            with columnas_codigos[indice % 4]:
-                etiqueta = cod + (f" (PDF: {equiv})" if equiv else "")
-                valor = st.number_input(
-                    etiqueta,
-                    value=importe_detectado(datos["codigos"], cod, equiv),
-                    step=100.0,
-                    format="%.2f",
-                    key=f"ind_codigo_{cod}"
-                )
-                codigos_manual[cod] = {"descripcion": "manual", "importe": valor}
+        with st.expander("Mostrar / editar"):
+            st.caption(
+                "Se precargan con lo detectado. Corrige los importes si la lectura "
+                "del talón no fue exacta."
+            )
+            columnas_codigos = st.columns(3)
+
+            for indice, (cod, equiv) in enumerate(CODIGOS_FORMATO):
+                with columnas_codigos[indice % 3]:
+                    etiqueta = cod + (f" (PDF: {equiv})" if equiv else "")
+                    valor = st.number_input(
+                        etiqueta,
+                        value=importe_detectado(datos["codigos"], cod, equiv),
+                        step=100.0,
+                        format="%.2f",
+                        key=f"ind_codigo_{cod}"
+                    )
+                    codigos_manual[cod] = {
+                        "descripcion": "manual",
+                        "importe": valor
+                    }
 
         st.divider()
 
@@ -560,7 +865,10 @@ with tab_individual:
             codigos_extraidos=codigos_manual,
             descuentos_talon=descuentos,
             abono_extra=abono_extra,
-            programado=programado
+            programado=programado,
+            cuentas_terminadas=(
+                cuentas_terminadas if tiene_cuentas_terminadas else []
+            )
         )
 
         resultado_liquidez = generar_resultado_liquidez(
@@ -574,7 +882,6 @@ with tab_individual:
             tiene_programado=tiene_programado
         )
 
-        st.subheader("Códigos usados en tu formato")
         codigos_revision = revision["codigos_revision"]
 
         tabla_codigos = [
@@ -586,25 +893,112 @@ with tab_individual:
             for cod, equiv in CODIGOS_FORMATO
         ]
 
-        st.dataframe(tabla_codigos, use_container_width=True)
-        st.divider()
+        with st.expander("Ver resumen de códigos utilizados"):
+            st.dataframe(tabla_codigos, use_container_width=True)
 
+        st.divider()
+        st.markdown("### 7. Resultado de revisión")
         tiene_programado_consolidado = tiene_programado
         render_resumen_revision(revision, tiene_programado_consolidado, "ind_")
 
         st.divider()
+        st.markdown("### 8. Mensaje generado")
         render_mensaje_vendedor(mensaje, "ind_")
 
         st.divider()
-        st.subheader("Generar Excel de revisión")
+        st.markdown("### 9. Acciones")
+        st.caption(
+            "Genera los reportes de revisión. Al crear el Excel también se intenta "
+            "subir el Excel, el PDF de revisión y el talón original."
+        )
 
-        if st.button("Generar Excel", type="primary", key="ind_generar_excel"):
+        with st.expander("Vista previa del Excel"):
+            st.dataframe(
+                pd.DataFrame([{
+                    "Liquidez del talón": revision["liquidez_talon"],
+                    "Apoyo adicional": revision["abono_extra"],
+                    "Saldo liberado": revision["total_saldo_liberado"],
+                    "Solo observado": revision.get("total_solo_observado", 0),
+                    "Programado": revision["programado"],
+                    "Liquidez final": revision["liquidez_final"]
+                }]),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            if revision.get("cuentas_terminadas"):
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "QNA termina": cuenta.get("qna_termina", ""),
+                            "Saldo liberado": cuenta.get("saldo_liberado", 0),
+                            "Sumar a liquidez": cuenta.get(
+                                "sumar_a_liquidez",
+                                False
+                            ),
+                            "Observación": cuenta.get("observacion", "")
+                        }
+                        for cuenta in revision["cuentas_terminadas"]
+                    ]),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        col_excel, col_pdf = st.columns(2)
+        with col_excel:
+            generar_excel = st.button(
+                "Generar Excel de revisión",
+                type="primary",
+                key="ind_generar_excel",
+                use_container_width=True
+            )
+        with col_pdf:
+            generar_pdf = st.button(
+                "Generar PDF",
+                key="ind_generar_pdf",
+                use_container_width=True
+            )
+
+        if generar_pdf:
+            if not datos_editados["nombre"].strip() or not datos_editados["rfc"].strip():
+                st.error("Captura al menos el Nombre y el RFC antes de generar el PDF.")
+                st.stop()
+
+            try:
+                ruta_revision_pdf = generar_pdf_revision(
+                    datos=datos_editados,
+                    revision=revision,
+                    mensaje_vendedor=mensaje,
+                    promotor=promotor,
+                    qna=qna
+                )
+                with open(ruta_revision_pdf, "rb") as archivo:
+                    st.download_button(
+                        label="Descargar PDF generado",
+                        data=archivo,
+                        file_name=Path(ruta_revision_pdf).name,
+                        mime="application/pdf",
+                        key="ind_descargar_pdf"
+                    )
+                st.success(f"PDF generado correctamente: {ruta_revision_pdf}")
+            except Exception as error:
+                st.error("Ocurrió un error al generar el PDF.")
+                st.exception(error)
+
+        if generar_excel:
             if not datos_editados["nombre"].strip() or not datos_editados["rfc"].strip():
                 st.error("Captura al menos el Nombre y el RFC antes de generar el Excel.")
                 st.stop()
 
             try:
                 ruta_excel = generar_excel_revision(
+                    datos=datos_editados,
+                    revision=revision,
+                    mensaje_vendedor=mensaje,
+                    promotor=promotor,
+                    qna=qna
+                )
+                ruta_revision_pdf = generar_pdf_revision(
                     datos=datos_editados,
                     revision=revision,
                     mensaje_vendedor=mensaje,
@@ -621,7 +1015,16 @@ with tab_individual:
                         key="ind_descargar_excel"
                     )
 
-                st.success(f"Excel generado correctamente: {ruta_excel}")
+                with open(ruta_revision_pdf, "rb") as archivo:
+                    st.download_button(
+                        label="Descargar PDF de revisión",
+                        data=archivo,
+                        file_name=Path(ruta_revision_pdf).name,
+                        mime="application/pdf",
+                        key="ind_descargar_pdf_excel"
+                    )
+
+                st.success("Excel y PDF de revisión generados correctamente.")
 
                 try:
                     resultado_graph = subir_revision_a_graph(
@@ -631,7 +1034,8 @@ with tab_individual:
                         semana=semana,
                         promotor=promotor,
                         nombre_cliente=datos_editados["nombre"],
-                        rfc=datos_editados["rfc"]
+                        rfc=datos_editados["rfc"],
+                        ruta_revision_pdf=ruta_revision_pdf
                     )
 
                     st.success("Archivos subidos correctamente a OneDrive/SharePoint.")
@@ -651,15 +1055,23 @@ with tab_individual:
                             key="ind_link_excel"
                         )
 
+                    if resultado_graph.get("revision_pdf_web_url"):
+                        st.link_button(
+                            "Abrir PDF de revisión en OneDrive",
+                            resultado_graph["revision_pdf_web_url"],
+                            key="ind_link_revision_pdf"
+                        )
+
                 except GraphStorageError as error:
                     st.warning(
-                        "El Excel se generó localmente, pero no se pudo subir a OneDrive/SharePoint."
+                        "Los reportes se generaron localmente, pero no se pudieron "
+                        "subir a OneDrive/SharePoint."
                     )
                     st.error(str(error))
 
                 except Exception as error:
                     st.warning(
-                        "El Excel se generó localmente, pero ocurrió un error inesperado "
+                        "Los reportes se generaron localmente, pero ocurrió un error inesperado "
                         "al subir a OneDrive/SharePoint."
                     )
                     st.exception(error)
@@ -737,7 +1149,7 @@ with tab_lote:
 
         df_lote = pd.DataFrame([
             {
-                "Procesar": True,
+                "Procesar": r.get("procesar", True),
                 "Archivo": r["archivo"],
                 "Nombre": r["nombre"],
                 "RFC": r["rfc"],
@@ -780,7 +1192,7 @@ with tab_lote:
 
         st.session_state.lote_registros = registros
 
-        with st.expander("Corregir códigos de un talón"):
+        with st.expander("Corregir códigos y cuentas de un talón"):
             opciones_archivo = [r["archivo"] for r in registros]
             archivo_seleccionado = st.selectbox(
                 "Selecciona el talón",
@@ -810,6 +1222,20 @@ with tab_lote:
                     }
 
             registros[indice_sel]["codigos"] = codigos_actualizados
+            st.divider()
+
+            cuentas_registro, tiene_cuentas_registro = render_cuentas_terminadas(
+                cuentas=registro_sel.get("cuentas_terminadas", []),
+                tiene_cuentas=registro_sel.get(
+                    "tiene_cuentas_terminadas",
+                    False
+                ),
+                key_prefix=f"lote_{indice_sel}_"
+            )
+            registros[indice_sel]["cuentas_terminadas"] = cuentas_registro
+            registros[indice_sel][
+                "tiene_cuentas_terminadas"
+            ] = tiene_cuentas_registro
             st.session_state.lote_registros = registros
 
         revision_consolidada = calcular_revision_consolidada(registros)
@@ -918,8 +1344,18 @@ with tab_lote:
                         promotor=promotor,
                         qna=qna
                     )
+                    ruta_revision_pdf = generar_pdf_revision(
+                        datos=datos_excel,
+                        revision=revision,
+                        mensaje_vendedor=mensaje,
+                        promotor=promotor,
+                        qna=qna
+                    )
 
-                    detalle = f"Excel: {Path(ruta_excel).name}"
+                    detalle = (
+                        f"Excel: {Path(ruta_excel).name} | "
+                        f"PDF: {Path(ruta_revision_pdf).name}"
+                    )
 
                     try:
                         resultado_graph = subir_revision_a_graph(
@@ -929,7 +1365,8 @@ with tab_lote:
                             semana=semana,
                             promotor=promotor,
                             nombre_cliente=nombre_cliente,
-                            rfc=rfc_cliente
+                            rfc=rfc_cliente,
+                            ruta_revision_pdf=ruta_revision_pdf
                         )
 
                         detalle += f" | Remoto: {resultado_graph['remote_folder_path']}"

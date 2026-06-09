@@ -69,12 +69,14 @@ def calcular_revision_talon(
     codigos_extraidos: dict,
     descuentos_talon: float,
     abono_extra: float = 0,
-    programado: float = 0
+    programado: float = 0,
+    cuentas_terminadas: list[dict] = None
 ) -> dict:
     """
     Calcula los datos principales de tu formato.
     """
 
+    cuentas_terminadas = cuentas_terminadas or []
     codigos_revision = filtrar_codigos_revision(codigos_extraidos)
 
     ingresos = calcular_ingresos_revision(codigos_revision)
@@ -86,7 +88,20 @@ def calcular_revision_talon(
     saldo_mas_abonos_70 = saldo_70 - programado
     saldo_mas_abono_100 = saldo_100 - programado
 
-    liquidez_final = saldo_100 + abono_extra - programado
+    total_saldo_liberado = sum(
+        float(cuenta.get("saldo_liberado", 0) or 0)
+        for cuenta in cuentas_terminadas
+        if cuenta.get("sumar_a_liquidez", False)
+    )
+    total_solo_observado = sum(
+        float(cuenta.get("saldo_liberado", 0) or 0)
+        for cuenta in cuentas_terminadas
+        if not cuenta.get("sumar_a_liquidez", False)
+    )
+
+    liquidez_talon = saldo_100
+    liquidez_antes_liberacion = liquidez_talon + abono_extra - programado
+    liquidez_final = liquidez_antes_liberacion + total_saldo_liberado
 
     return {
         "codigos_revision": codigos_revision,
@@ -99,5 +114,10 @@ def calcular_revision_talon(
         "saldo_mas_abono_100": round(saldo_mas_abono_100, 2),
         "abono_extra": round(abono_extra, 2),
         "programado": round(programado, 2),
+        "cuentas_terminadas": cuentas_terminadas,
+        "liquidez_talon": round(liquidez_talon, 2),
+        "total_saldo_liberado": round(total_saldo_liberado, 2),
+        "total_solo_observado": round(total_solo_observado, 2),
+        "liquidez_antes_liberacion": round(liquidez_antes_liberacion, 2),
         "liquidez_final": round(liquidez_final, 2)
     }
