@@ -12,12 +12,15 @@ from services.generador_pdf import generar_pdf_revision
 from services.graph_storage import subir_revision_a_graph, GraphStorageError
 from utils.refinanciamiento import (
     COLUMNAS_MANUALES,
+    OUTPUT_REFINANCIAMIENTO_DIR,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
     dataframe_facturas_vacio,
     dataframe_simulacion,
     extraer_fecha_edad_desde_rfc,
-    generar_excel_refinanciamiento
+    generar_excel_refinanciamiento,
+    guardar_excel_refinanciamiento,
+    nombre_archivo_refinanciamiento
 )
 
 
@@ -1445,7 +1448,7 @@ with tab_refinanciamiento:
                 key="ref_cliente"
             )
 
-        col_rfc, col_quinquenio, col_aumento = st.columns(3)
+        col_rfc, col_vendedor, col_semana = st.columns(3)
 
         with col_rfc:
             rfc_nac = st.text_input(
@@ -1453,6 +1456,25 @@ with tab_refinanciamiento:
                 placeholder="J860901UT6",
                 key="ref_rfc_nac"
             )
+
+        with col_vendedor:
+            vendedor_refinanciamiento = st.selectbox(
+                "Vendedor",
+                PROMOTORES,
+                key="ref_vendedor"
+            )
+
+        with col_semana:
+            semana_refinanciamiento = st.number_input(
+                "Semana",
+                min_value=1,
+                max_value=53,
+                value=datetime.now().isocalendar().week,
+                step=1,
+                key="ref_semana"
+            )
+
+        col_quinquenio, col_aumento = st.columns(2)
 
         with col_quinquenio:
             quinquenio = st.number_input(
@@ -1651,6 +1673,8 @@ with tab_refinanciamiento:
         )
         st.markdown(
             f"**Fecha:** {fecha_refinanciamiento.strftime('%d/%m/%Y')}  \n"
+            f"**Semana:** SEM_{int(semana_refinanciamiento):02d}  \n"
+            f"**Vendedor:** {vendedor_refinanciamiento}  \n"
             f"**Cliente:** {cliente_refinanciamiento or 'Sin capturar'}  \n"
             f"**RFC/NAC:** {rfc_nac or 'Sin capturar'}  \n"
             f"**Fecha nacimiento:** {fecha_nacimiento_texto}  \n"
@@ -1687,14 +1711,29 @@ with tab_refinanciamiento:
             )
 
         simulacion_df = dataframe_simulacion(resumen_refinanciamiento)
+        filas_destacadas = {"VENTA POSIBLE", "DESCUENTO NUEVO"}
+
+        def resaltar_simulacion(fila):
+            if fila.name in filas_destacadas:
+                return [
+                    "font-weight: bold; background-color: #fff2cc"
+                    for _ in fila
+                ]
+            return ["" for _ in fila]
+
         st.dataframe(
-            simulacion_df.style.format("${:,.2f}"),
+            simulacion_df.style.format("${:,.2f}").apply(
+                resaltar_simulacion,
+                axis=1
+            ),
             use_container_width=True
         )
 
     st.markdown("### 6. Exportar")
     datos_cliente_refinanciamiento = {
         "fecha": fecha_refinanciamiento,
+        "semana": int(semana_refinanciamiento),
+        "vendedor": vendedor_refinanciamiento,
         "cliente": cliente_refinanciamiento,
         "rfc_nac": rfc_nac,
         "fecha_nacimiento": nacimiento["fecha_nacimiento"],
@@ -1706,15 +1745,47 @@ with tab_refinanciamiento:
         resumen=resumen_refinanciamiento,
         datos_cliente=datos_cliente_refinanciamiento
     )
-    nombre_cliente_ref = (
-        cliente_refinanciamiento.strip().upper().replace(" ", "_")
-        or "CLIENTE"
+    nombre_excel_refinanciamiento = nombre_archivo_refinanciamiento(
+        cliente_refinanciamiento,
+        int(semana_refinanciamiento)
     )
-    st.download_button(
-        "Exportar refinanciamiento a Excel",
-        data=excel_refinanciamiento,
-        file_name=f"REFINANCIAMIENTO_{nombre_cliente_ref}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        key="ref_descargar_excel"
-    )
+    col_descargar_ref, col_guardar_ref = st.columns(2)
+
+    with col_descargar_ref:
+        st.download_button(
+            "Exportar refinanciamiento a Excel",
+            data=excel_refinanciamiento,
+            file_name=nombre_excel_refinanciamiento,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            key="ref_descargar_excel",
+            use_container_width=True
+        )
+
+    with col_guardar_ref:
+        if st.button(
+            "Guardar refinanciamiento en carpeta",
+            key="ref_guardar_carpeta",
+            use_container_width=True
+        ):
+            if not cliente_refinanciamiento.strip():
+                st.error("Captura el nombre del cliente antes de guardar.")
+            elif not vendedor_refinanciamiento.strip():
+                st.error("Selecciona un vendedor antes de guardar.")
+            else:
+                try:
+                    ruta_guardada = guardar_excel_refinanciamiento(
+                        contenido=excel_refinanciamiento,
+                        base_dir=OUTPUT_REFINANCIAMIENTO_DIR,
+                        semana=int(semana_refinanciamiento),
+                        vendedor=vendedor_refinanciamiento,
+                        cliente=cliente_refinanciamiento
+                    )
+                    st.success(
+                        "Refinanciamiento guardado correctamente:\n"
+                        f"{ruta_guardada}"
+                    )
+                except Exception as error:
+                    st.error(
+                        f"No se pudo guardar el refinanciamiento: {error}"
+                    )

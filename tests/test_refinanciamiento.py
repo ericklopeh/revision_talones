@@ -1,6 +1,8 @@
 import unittest
+import tempfile
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -9,9 +11,13 @@ from utils.refinanciamiento import (
     COLUMNAS_MANUALES,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
+    construir_carpeta_refinanciamiento,
     dataframe_facturas_vacio,
     extraer_fecha_edad_desde_rfc,
     generar_excel_refinanciamiento,
+    guardar_excel_refinanciamiento,
+    nombre_archivo_refinanciamiento,
+    slug_folder_name,
     to_number
 )
 
@@ -223,6 +229,8 @@ class RefinanciamientoTest(unittest.TestCase):
             resumen=resumen,
             datos_cliente={
                 "fecha": date(2026, 6, 9),
+                "semana": 23,
+                "vendedor": "Juan Manuel",
                 "cliente": "CLIENTE PRUEBA",
                 "rfc_nac": "J860901UT6",
                 "fecha_nacimiento": date(1986, 9, 1),
@@ -240,16 +248,94 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(workbook["Facturas"]["C2"].value, 42117.20)
         self.assertEqual(workbook["Facturas"]["J2"].number_format, "0%")
         self.assertEqual(
-            workbook["Resumen Refinanciamiento"]["B9"].value,
+            workbook["Resumen Refinanciamiento"]["B3"].value,
+            23
+        )
+        self.assertEqual(
+            workbook["Resumen Refinanciamiento"]["B4"].value,
+            "Juan Manuel"
+        )
+        self.assertEqual(
+            workbook["Resumen Refinanciamiento"]["B11"].value,
             2506.54
         )
         self.assertEqual(
-            workbook["Resumen Refinanciamiento"]["B22"].value,
+            workbook["Resumen Refinanciamiento"]["B24"].value,
             121282.17
         )
         self.assertEqual(
-            workbook["Resumen Refinanciamiento"]["B23"].value,
+            workbook["Resumen Refinanciamiento"]["B25"].value,
             180470.88
+        )
+        self.assertTrue(
+            workbook["Resumen Refinanciamiento"]["A24"].font.bold
+        )
+        self.assertEqual(
+            workbook["Resumen Refinanciamiento"]["A24"].fill.fgColor.rgb,
+            "00FFF2CC"
+        )
+        self.assertTrue(
+            workbook["Resumen Refinanciamiento"]["A26"].font.bold
+        )
+
+    def test_construye_y_guarda_en_carpeta_por_semana_vendedor_cliente(self):
+        resumen = calcular_resumen_refinanciamiento(self.facturas, 0)
+        contenido = generar_excel_refinanciamiento(
+            facturas=self.facturas,
+            resumen=resumen,
+            datos_cliente={
+                "semana": 23,
+                "vendedor": "Juan Manuel",
+                "fecha": date(2026, 6, 9),
+                "cliente": "JUAN CARLOS NAVA CASTRO",
+                "rfc_nac": "NACJ860901UT6",
+                "fecha_nacimiento": date(1986, 9, 1),
+                "edad": 39,
+                "quinquenio": 40
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as carpeta_temporal:
+            ruta = guardar_excel_refinanciamiento(
+                contenido=contenido,
+                base_dir=carpeta_temporal,
+                semana=23,
+                vendedor="Juan Manuel",
+                cliente="JUAN CARLOS NAVA CASTRO"
+            )
+            esperada = (
+                Path(carpeta_temporal)
+                / "SEM_23"
+                / "Juan Manuel"
+                / "JUAN CARLOS NAVA CASTRO"
+                / "refinanciamiento_JUAN_CARLOS_NAVA_CASTRO_SEM_23.xlsx"
+            )
+
+            self.assertEqual(ruta, esperada)
+            self.assertTrue(ruta.exists())
+
+    def test_sanitiza_nombres_y_genera_nombre_de_archivo(self):
+        self.assertEqual(
+            slug_folder_name(' Juan / Carlos: Nava  '),
+            "Juan Carlos Nava"
+        )
+        self.assertEqual(
+            str(construir_carpeta_refinanciamiento(
+                "salidas",
+                1,
+                "",
+                ""
+            )),
+            str(
+                Path("salidas")
+                / "SEM_01"
+                / "VENDEDOR_SIN_SELECCIONAR"
+                / "CLIENTE_SIN_NOMBRE"
+            )
+        )
+        self.assertEqual(
+            nombre_archivo_refinanciamiento("", 9),
+            "refinanciamiento_CLIENTE_SIN_NOMBRE_SEM_09.xlsx"
         )
 
 

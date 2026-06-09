@@ -1,6 +1,7 @@
 import re
 from datetime import date, datetime
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook
@@ -27,6 +28,7 @@ COLUMNAS_CALCULADAS = [
 ]
 
 PLAZOS_REFINANCIAMIENTO = [72, 60, 46, 34]
+OUTPUT_REFINANCIAMIENTO_DIR = Path("salidas")
 
 
 def to_number(valor) -> float:
@@ -48,6 +50,71 @@ def to_number(valor) -> float:
 
 
 convertir_numero = to_number
+
+
+def slug_folder_name(valor, reemplazar_espacios: bool = False) -> str:
+    texto = str(valor or "").strip()
+    texto = re.sub(r'[\\/:*?"<>|]', "", texto)
+    texto = " ".join(texto.split())
+
+    if reemplazar_espacios:
+        texto = texto.replace(" ", "_")
+
+    return texto
+
+
+def construir_carpeta_refinanciamiento(
+    base_dir,
+    semana: int,
+    vendedor: str,
+    cliente: str
+) -> Path:
+    semana = max(1, min(int(semana), 53))
+    vendedor_limpio = (
+        slug_folder_name(vendedor)
+        or "VENDEDOR_SIN_SELECCIONAR"
+    )
+    cliente_limpio = (
+        slug_folder_name(cliente)
+        or "CLIENTE_SIN_NOMBRE"
+    )
+
+    return (
+        Path(base_dir)
+        / f"SEM_{semana:02d}"
+        / vendedor_limpio
+        / cliente_limpio
+    )
+
+
+def nombre_archivo_refinanciamiento(cliente: str, semana: int) -> str:
+    cliente_archivo = (
+        slug_folder_name(cliente, reemplazar_espacios=True)
+        or "CLIENTE_SIN_NOMBRE"
+    )
+    return (
+        f"refinanciamiento_{cliente_archivo}_"
+        f"SEM_{int(semana):02d}.xlsx"
+    )
+
+
+def guardar_excel_refinanciamiento(
+    contenido: bytes,
+    base_dir,
+    semana: int,
+    vendedor: str,
+    cliente: str
+) -> Path:
+    carpeta = construir_carpeta_refinanciamiento(
+        base_dir=base_dir,
+        semana=semana,
+        vendedor=vendedor,
+        cliente=cliente
+    )
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / nombre_archivo_refinanciamiento(cliente, semana)
+    ruta.write_bytes(contenido)
+    return ruta
 
 
 def extraer_fecha_edad_desde_rfc(
@@ -340,6 +407,8 @@ def generar_excel_refinanciamiento(
     ws_resumen["A1"].alignment = Alignment(horizontal="center")
 
     campos = [
+        ("Semana", datos_cliente.get("semana")),
+        ("Vendedor", datos_cliente.get("vendedor", "")),
         ("Fecha", datos_cliente.get("fecha")),
         ("Cliente", datos_cliente.get("cliente", "")),
         ("RFC/NAC", datos_cliente.get("rfc_nac", "")),
@@ -362,13 +431,13 @@ def generar_excel_refinanciamiento(
         ws_resumen.cell(fila, 1).font = Font(bold=True)
         ws_resumen.cell(fila, 2, valor)
 
-        if fila >= 9:
+        if fila >= 11:
             ws_resumen.cell(fila, 2).number_format = moneda
 
-    ws_resumen["B3"].number_format = "dd/mm/yyyy"
-    ws_resumen["B6"].number_format = "dd/mm/yyyy"
+    ws_resumen["B5"].number_format = "dd/mm/yyyy"
+    ws_resumen["B8"].number_format = "dd/mm/yyyy"
 
-    inicio_simulacion = 20
+    inicio_simulacion = 22
     ws_resumen.cell(inicio_simulacion, 1, "PLAZO")
     for columna, plazo in enumerate(PLAZOS_REFINANCIAMIENTO, start=2):
         ws_resumen.cell(inicio_simulacion, columna, plazo)
@@ -399,6 +468,12 @@ def generar_excel_refinanciamiento(
     for fila in range(inicio_simulacion + 1, inicio_simulacion + 6):
         ws_resumen.cell(fila, 1).fill = subtitulo_fill
         ws_resumen.cell(fila, 1).font = Font(bold=True)
+
+    for fila in [inicio_simulacion + 2, inicio_simulacion + 4]:
+        for columna in range(1, 6):
+            celda = ws_resumen.cell(fila, columna)
+            celda.fill = PatternFill("solid", fgColor="FFF2CC")
+            celda.font = Font(bold=True)
 
     ws_resumen.column_dimensions["A"].width = 35
     for columna in "BCDE":
