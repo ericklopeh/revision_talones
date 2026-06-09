@@ -12,9 +12,9 @@ COLUMNAS_MANUALES = [
     "FACT",
     "VTA",
     "SALDO",
-    "QNAS TOMADAS A CUENTA",
     "ABONO",
-    "EN COBRO"
+    "EN COBRO",
+    "QNAS TOMADAS A CUENTA"
 ]
 
 COLUMNAS_CALCULADAS = [
@@ -29,17 +29,25 @@ COLUMNAS_CALCULADAS = [
 PLAZOS_REFINANCIAMIENTO = [72, 60, 46, 34]
 
 
-def convertir_numero(valor) -> float:
+def to_number(valor) -> float:
     if valor is None or pd.isna(valor):
         return 0.0
 
     if isinstance(valor, str):
-        valor = valor.replace("$", "").replace(",", "").strip()
+        valor = (
+            valor.replace("$", "")
+            .replace(",", "")
+            .replace("%", "")
+            .strip()
+        )
 
     try:
         return float(valor)
     except (TypeError, ValueError):
         return 0.0
+
+
+convertir_numero = to_number
 
 
 def extraer_fecha_edad_desde_rfc(
@@ -98,9 +106,9 @@ def dataframe_facturas_vacio(filas: int = 5) -> pd.DataFrame:
             "FACT": "",
             "VTA": 0.0,
             "SALDO": 0.0,
-            "QNAS TOMADAS A CUENTA": 0,
             "ABONO": 0.0,
-            "EN COBRO": ""
+            "EN COBRO": "",
+            "QNAS TOMADAS A CUENTA": ""
         }
         for _ in range(filas)
     ])
@@ -164,9 +172,9 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         "SALDO",
         "QNAS TOMADAS A CUENTA",
         "ABONO",
+        "EN COBRO",
         "ABONO DE QUINCENAS",
         "SALDO PENDIENTE",
-        "EN COBRO",
         "PORCENTAJE PAGADO",
         "REFINANCIAMIENTO",
         "PUEDE REFINANCIAR"
@@ -274,7 +282,7 @@ def generar_excel_refinanciamiento(
     encabezado_font = Font(color="FFFFFF", bold=True)
     subtitulo_fill = PatternFill("solid", fgColor="D9EAF7")
     moneda = '$ #,##0.00;-$ #,##0.00;$ -'
-    porcentaje = "0.00%"
+    porcentaje = "0%"
 
     columnas_facturas = [
         "FACT",
@@ -283,9 +291,9 @@ def generar_excel_refinanciamiento(
         "SALDO",
         "QNAS TOMADAS A CUENTA",
         "ABONO",
+        "EN COBRO",
         "ABONO DE QUINCENAS",
         "SALDO PENDIENTE",
-        "EN COBRO",
         "PORCENTAJE PAGADO",
         "REFINANCIAMIENTO",
         "PUEDE REFINANCIAR"

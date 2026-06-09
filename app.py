@@ -1517,16 +1517,25 @@ with tab_refinanciamiento:
         "Los resultados aparecen en la tabla calculada inferior."
     )
 
-    if "ref_facturas" not in st.session_state:
-        st.session_state.ref_facturas = dataframe_facturas_vacio()
-    else:
-        st.session_state.ref_facturas = st.session_state.ref_facturas.reindex(
-            columns=COLUMNAS_MANUALES,
-            fill_value=0
-        )
+    estado_facturas = "refi_facturas_input"
+    if estado_facturas not in st.session_state:
+        datos_anteriores = st.session_state.get("ref_facturas")
+        if isinstance(datos_anteriores, pd.DataFrame):
+            facturas_iniciales = datos_anteriores.copy()
+            for columna in COLUMNAS_MANUALES:
+                if columna not in facturas_iniciales:
+                    facturas_iniciales[columna] = (
+                        "" if columna in ["FACT", "EN COBRO", "QNAS TOMADAS A CUENTA"]
+                        else 0.0
+                    )
+            st.session_state[estado_facturas] = facturas_iniciales[
+                COLUMNAS_MANUALES
+            ].copy()
+        else:
+            st.session_state[estado_facturas] = dataframe_facturas_vacio()
 
     facturas_editadas = st.data_editor(
-        st.session_state.ref_facturas,
+        st.session_state[estado_facturas],
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
@@ -1534,21 +1543,25 @@ with tab_refinanciamiento:
             "FACT": st.column_config.TextColumn("FACT"),
             "VTA": st.column_config.NumberColumn("VTA", format="$ %.2f"),
             "SALDO": st.column_config.NumberColumn("SALDO", format="$ %.2f"),
+            "ABONO": st.column_config.NumberColumn("ABONO", format="$ %.2f"),
+            "EN COBRO": st.column_config.SelectboxColumn(
+                "EN COBRO",
+                options=["", "SI", "NO"]
+            ),
             "QNAS TOMADAS A CUENTA": st.column_config.NumberColumn(
                 "QNAS TOMADAS A CUENTA",
                 min_value=0,
                 step=1,
-                format="%d"
-            ),
-            "ABONO": st.column_config.NumberColumn("ABONO", format="$ %.2f"),
-            "EN COBRO": st.column_config.TextColumn("EN COBRO")
+                format="%d",
+                required=False
+            )
         },
-        key="ref_data_editor"
+        key="refi_facturas_editor"
     )
-    st.session_state.ref_facturas = facturas_editadas.copy()
+    st.session_state[estado_facturas] = facturas_editadas.copy()
 
     facturas_resultado = calcular_facturas_refinanciamiento(facturas_editadas)
-    st.markdown("#### Cálculo por factura")
+    st.markdown("### 3. Tabla calculada por factura")
     st.caption(
         "PAGADO y las demás columnas se recalculan automáticamente "
         "a partir de los datos capturados."
@@ -1561,7 +1574,7 @@ with tab_refinanciamiento:
             "ABONO": "${:,.2f}",
             "ABONO DE QUINCENAS": "${:,.2f}",
             "SALDO PENDIENTE": "${:,.2f}",
-            "PORCENTAJE PAGADO": "{:.2%}",
+            "PORCENTAJE PAGADO": "{:.0%}",
             "REFINANCIAMIENTO": "${:,.2f}"
         }),
         use_container_width=True,
@@ -1572,7 +1585,7 @@ with tab_refinanciamiento:
         aumento_descuento
     )
 
-    st.markdown("### 3. Totales principales")
+    st.markdown("### 4. Totales principales")
     col_total_vta, col_total_pagado, col_total_saldo = st.columns(3)
     with col_total_vta:
         st.metric(
@@ -1620,9 +1633,30 @@ with tab_refinanciamiento:
             )
         )
 
-    st.markdown("### 4. Resumen de refinanciamiento")
+    st.markdown("### 5. Resumen de refinanciamiento")
     with st.container(border=True):
-        col_abono_ref, col_abono_antes, col_abono_nuevo = st.columns(3)
+        fecha_nacimiento_texto = (
+            nacimiento["fecha_nacimiento"].strftime("%d/%m/%Y")
+            if nacimiento["fecha_nacimiento"]
+            else "No disponible"
+        )
+        edad_texto = (
+            str(nacimiento["edad"])
+            if nacimiento["edad"] is not None
+            else "No disponible"
+        )
+        st.markdown(
+            f"**Fecha:** {fecha_refinanciamiento.strftime('%d/%m/%Y')}  \n"
+            f"**Cliente:** {cliente_refinanciamiento or 'Sin capturar'}  \n"
+            f"**RFC/NAC:** {rfc_nac or 'Sin capturar'}  \n"
+            f"**Fecha nacimiento:** {fecha_nacimiento_texto}  \n"
+            f"**Edad:** {edad_texto} &nbsp;&nbsp; **Quinquenio:** {quinquenio}"
+        )
+        st.divider()
+
+        col_abono_ref, col_abono_antes, col_aumento, col_abono_nuevo = (
+            st.columns(4)
+        )
         with col_abono_ref:
             st.metric(
                 "ABONO REF",
@@ -1632,6 +1666,13 @@ with tab_refinanciamiento:
             st.metric(
                 "ABONO ANTES",
                 formato_moneda(resumen_refinanciamiento["abono_antes"])
+            )
+        with col_aumento:
+            st.metric(
+                "AUMENTO EN DESCUENTO",
+                formato_moneda(
+                    resumen_refinanciamiento["aumento_descuento"]
+                )
             )
         with col_abono_nuevo:
             st.metric(
@@ -1647,7 +1688,7 @@ with tab_refinanciamiento:
             use_container_width=True
         )
 
-    st.markdown("### 5. Exportar")
+    st.markdown("### 6. Exportar")
     datos_cliente_refinanciamiento = {
         "fecha": fecha_refinanciamiento,
         "cliente": cliente_refinanciamiento,

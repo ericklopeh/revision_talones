@@ -6,10 +6,13 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from utils.refinanciamiento import (
+    COLUMNAS_MANUALES,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
+    dataframe_facturas_vacio,
     extraer_fecha_edad_desde_rfc,
-    generar_excel_refinanciamiento
+    generar_excel_refinanciamiento,
+    to_number
 )
 
 
@@ -91,6 +94,53 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(facturas.loc[0, "SALDO PENDIENTE"], 400)
         self.assertEqual(facturas.loc[0, "PORCENTAJE PAGADO"], 0)
         self.assertEqual(facturas.loc[0, "PUEDE REFINANCIAR"], "NO")
+
+    def test_qnas_vacias_o_invalidas_se_toman_como_cero(self):
+        facturas = calcular_facturas_refinanciamiento(pd.DataFrame([
+            {
+                "FACT": "VACIA",
+                "VTA": "$ 1,000.00",
+                "SALDO": "600.00",
+                "ABONO": "100",
+                "EN COBRO": "",
+                "QNAS TOMADAS A CUENTA": ""
+            },
+            {
+                "FACT": "TEXTO",
+                "VTA": 1000,
+                "SALDO": 600,
+                "ABONO": 100,
+                "EN COBRO": "",
+                "QNAS TOMADAS A CUENTA": "dato inválido"
+            }
+        ]))
+
+        self.assertEqual(facturas.loc[0, "ABONO DE QUINCENAS"], 0)
+        self.assertEqual(facturas.loc[1, "ABONO DE QUINCENAS"], 0)
+        self.assertEqual(facturas.loc[0, "SALDO PENDIENTE"], 600)
+        self.assertEqual(facturas.loc[1, "SALDO PENDIENTE"], 600)
+
+    def test_columnas_manuales_tienen_orden_y_qnas_vacias(self):
+        self.assertEqual(
+            COLUMNAS_MANUALES,
+            [
+                "FACT",
+                "VTA",
+                "SALDO",
+                "ABONO",
+                "EN COBRO",
+                "QNAS TOMADAS A CUENTA"
+            ]
+        )
+        self.assertEqual(
+            dataframe_facturas_vacio(1).loc[0, "QNAS TOMADAS A CUENTA"],
+            ""
+        )
+
+    def test_conversion_numerica_acepta_formatos_comunes(self):
+        self.assertEqual(to_number("$ 58,564.00"), 58564)
+        self.assertEqual(to_number("72%"), 72)
+        self.assertEqual(to_number(""), 0)
 
     def test_totales_y_simulacion_coinciden_con_ejemplo(self):
         resumen = calcular_resumen_refinanciamiento(self.facturas, 0)
@@ -180,6 +230,7 @@ class RefinanciamientoTest(unittest.TestCase):
         )
         self.assertEqual(workbook["Facturas"]["A2"].value, "12546")
         self.assertEqual(workbook["Facturas"]["C2"].value, 42117.20)
+        self.assertEqual(workbook["Facturas"]["J2"].number_format, "0%")
         self.assertEqual(
             workbook["Resumen Refinanciamiento"]["B9"].value,
             2506.54
