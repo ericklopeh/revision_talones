@@ -93,29 +93,61 @@ def buscar_clientes(
     busqueda: str,
     limite: int = 50
 ) -> pd.DataFrame:
-    termino = str(busqueda or "").strip()
-    if len(termino) < 2:
+    tokens = [
+        token for token in str(busqueda or "").strip().split()
+        if len(token) >= 2
+    ]
+    if not tokens:
         return pd.DataFrame(
-            columns=["cliente_id", "cliente", "rfc", "saldo_total"]
+            columns=[
+                "cliente_id",
+                "cliente",
+                "rfc",
+                "facturas_encontradas",
+                "saldo_total"
+            ]
         )
 
+    condiciones = []
+    parametros = {"limite": int(limite)}
+    for indice, token in enumerate(tokens):
+        parametro = f"token_{indice}"
+        condiciones.append(
+            f"""(
+                COALESCE(c.first_name, '') ILIKE :{parametro}
+                OR COALESCE(c.last_name, '') ILIKE :{parametro}
+                OR COALESCE(c.rfc, '') ILIKE :{parametro}
+            )"""
+        )
+        parametros[parametro] = f"%{token}%"
+
     consulta = text(
-        """
+        f"""
+        WITH saldos_por_venta AS (
+            SELECT
+                p.sale_id,
+                COALESCE(SUM(i.amount), 0) AS saldo
+            FROM payments_payment p
+            JOIN payments_installment i ON i.payment_id = p.id
+            GROUP BY p.sale_id
+        )
         SELECT
             c.id AS cliente_id,
-            c.name AS cliente,
+            TRIM(CONCAT_WS(
+                ' ',
+                NULLIF(c.first_name, ''),
+                NULLIF(c.last_name, '')
+            )) AS cliente,
             COALESCE(c.rfc, '') AS rfc,
-            COALESCE(SUM(i.balance), 0) AS saldo_total
+            COUNT(DISTINCT s.id) AS facturas_encontradas,
+            COALESCE(SUM(spv.saldo), 0) AS saldo_total
         FROM customers_customer c
         JOIN sales_sale s ON s.customer_id = c.id
-        JOIN payments_installment i ON i.sale_id = s.id
-        WHERE (
-            c.name ILIKE :busqueda
-            OR COALESCE(c.rfc, '') ILIKE :busqueda
-        )
-        GROUP BY c.id, c.name, c.rfc
-        HAVING COALESCE(SUM(i.balance), 0) > 0
-        ORDER BY c.name, c.rfc
+        JOIN saldos_por_venta spv ON spv.sale_id = s.id
+        WHERE {" OR ".join(condiciones)}
+        GROUP BY c.id, c.first_name, c.last_name, c.rfc
+        HAVING COALESCE(SUM(spv.saldo), 0) > 0
+        ORDER BY c.first_name, c.last_name, c.rfc
         LIMIT :limite
         """
     )
@@ -125,10 +157,7 @@ def buscar_clientes(
             return pd.read_sql(
                 consulta,
                 conexion,
-                params={
-                    "busqueda": f"%{termino}%",
-                    "limite": int(limite)
-                }
+                params=parametros
             )
     except Exception as error:
         raise RefinanciamientoDatabaseError(
@@ -142,19 +171,39 @@ def cargar_facturas_cliente(
 ) -> pd.DataFrame:
     consulta = text(
         """
+        WITH ventas AS (
+            SELECT
+                si.sale_id,
+                COALESCE(SUM(si.real), 0) AS vta
+            FROM sales_saleitem si
+            GROUP BY si.sale_id
+        ),
+        saldos AS (
+            SELECT
+                p.sale_id,
+                COALESCE(SUM(i.amount), 0) AS saldo
+            FROM payments_payment p
+            JOIN payments_installment i ON i.payment_id = p.id
+            GROUP BY p.sale_id
+        )
         SELECT
             s.id AS venta_id,
             s.folio AS fact,
-            c.name AS cliente,
+            c.id AS cliente_id,
+            TRIM(CONCAT_WS(
+                ' ',
+                NULLIF(c.first_name, ''),
+                NULLIF(c.last_name, '')
+            )) AS cliente,
             COALESCE(c.rfc, '') AS rfc,
-            COALESCE(s.total, 0) AS vta,
-            COALESCE(SUM(i.balance), 0) AS saldo
+            COALESCE(v.vta, 0) AS vta,
+            COALESCE(sa.saldo, 0) AS saldo
         FROM sales_sale s
         JOIN customers_customer c ON c.id = s.customer_id
-        JOIN payments_installment i ON i.sale_id = s.id
+        LEFT JOIN ventas v ON v.sale_id = s.id
+        LEFT JOIN saldos sa ON sa.sale_id = s.id
         WHERE c.id = :cliente_id
-        GROUP BY s.id, s.folio, c.name, c.rfc, s.total
-        HAVING COALESCE(SUM(i.balance), 0) > 0
+          AND COALESCE(sa.saldo, 0) > 0
         ORDER BY s.folio
         """
     )
@@ -164,7 +213,7 @@ def cargar_facturas_cliente(
             return pd.read_sql(
                 consulta,
                 conexion,
-                params={"cliente_id": cliente_id}
+                params={"cliente_id": int(cliente_id)}
             )
     except Exception as error:
         raise RefinanciamientoDatabaseError(

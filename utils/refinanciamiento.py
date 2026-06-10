@@ -38,7 +38,8 @@ COLUMNAS_CALCULADAS = [
     "PORCENTAJE PAGADO",
     "REFINANCIAMIENTO",
     "PUEDE REFINANCIAR",
-    "ESTADO"
+    "ESTATUS",
+    "MOTIVO"
 ]
 
 PLAZOS_REFINANCIAMIENTO = [72, 60, 46, 34]
@@ -243,7 +244,7 @@ def preparar_facturas_desde_bd(df: pd.DataFrame) -> pd.DataFrame:
     facturas["INCLUIR"] = True
 
     calculadas = calcular_facturas_refinanciamiento(facturas)
-    calculadas["INCLUIR"] = calculadas["PUEDE REFINANCIAR"].eq("SI")
+    calculadas["INCLUIR"] = calculadas["ESTATUS"].eq("APTA")
     return calculadas
 
 
@@ -290,7 +291,7 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     )
     resultado["PORCENTAJE PAGADO"] = resultado[
         "PORCENTAJE PAGADO"
-    ].round(6)
+    ].clip(lower=0).round(6)
     resultado["REFINANCIAMIENTO"] = resultado["PAGADO"].round(2)
     fila_activa = (
         resultado["FACT"].astype(str).str.strip().ne("")
@@ -302,11 +303,21 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         fila_activa,
         "PORCENTAJE PAGADO"
     ].map(lambda porcentaje: "SI" if porcentaje >= 0.40 else "NO")
-    resultado["ESTADO"] = ""
-    resultado.loc[fila_activa, "ESTADO"] = resultado.loc[
+    saldo_anomalo = fila_activa & (resultado["SALDO"] > resultado["VTA"])
+    resultado.loc[saldo_anomalo, "PUEDE REFINANCIAR"] = "NO"
+
+    resultado["ESTATUS"] = ""
+    resultado.loc[fila_activa, "ESTATUS"] = resultado.loc[
         fila_activa,
         "PUEDE REFINANCIAR"
     ].map({"SI": "APTA", "NO": "NO APTA"})
+    resultado.loc[saldo_anomalo, "ESTATUS"] = "REVISAR SALDO"
+    resultado["MOTIVO"] = ""
+    resultado.loc[
+        fila_activa & ~saldo_anomalo & resultado["PUEDE REFINANCIAR"].eq("NO"),
+        "MOTIVO"
+    ] = "Menos del 40% pagado"
+    resultado.loc[saldo_anomalo, "MOTIVO"] = "SALDO mayor que VTA"
 
     incluir_original = resultado["INCLUIR"]
     incluir_default = resultado["PUEDE REFINANCIAR"].eq("SI")
@@ -329,7 +340,8 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         "PORCENTAJE PAGADO",
         "REFINANCIAMIENTO",
         "PUEDE REFINANCIAR",
-        "ESTADO"
+        "ESTATUS",
+        "MOTIVO"
     ]
     return resultado[columnas_salida]
 
@@ -451,7 +463,8 @@ def generar_excel_refinanciamiento(
         "PORCENTAJE PAGADO",
         "REFINANCIAMIENTO",
         "PUEDE REFINANCIAR",
-        "ESTADO"
+        "ESTATUS",
+        "MOTIVO"
     ]
     ws_facturas.append(columnas_facturas)
 
@@ -644,7 +657,7 @@ def generar_pdf_refinanciamiento(
     facturas_calculadas = filtrar_facturas_capturadas(facturas)
     encabezados = [
         "INCLUIR", "FACT", "VTA", "PAGADO", "SALDO", "QNAS",
-        "ABONO", "SALDO PEND.", "% PAGADO", "ESTADO"
+        "ABONO", "SALDO PEND.", "% PAGADO", "ESTATUS"
     ]
     filas = [encabezados]
     for _, factura in facturas_calculadas.iterrows():
@@ -658,7 +671,7 @@ def generar_pdf_refinanciamiento(
             f"${factura['ABONO']:,.2f}",
             f"${factura['SALDO PENDIENTE']:,.2f}",
             f"{factura['PORCENTAJE PAGADO']:.0%}",
-            factura["ESTADO"]
+            factura["ESTATUS"]
         ])
 
     tabla_facturas = Table(filas, repeatRows=1)

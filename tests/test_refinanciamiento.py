@@ -372,8 +372,24 @@ class RefinanciamientoTest(unittest.TestCase):
 
         self.assertTrue(resultado.loc[0, "INCLUIR"])
         self.assertFalse(resultado.loc[1, "INCLUIR"])
-        self.assertEqual(resultado.loc[0, "ESTADO"], "APTA")
-        self.assertEqual(resultado.loc[1, "ESTADO"], "NO APTA")
+        self.assertEqual(resultado.loc[0, "ESTATUS"], "APTA")
+        self.assertEqual(resultado.loc[1, "ESTATUS"], "NO APTA")
+
+    def test_saldo_mayor_a_vta_se_marca_para_revision(self):
+        resultado = calcular_facturas_refinanciamiento(pd.DataFrame([{
+            "FACT": "ANOMALA",
+            "VTA": 1000,
+            "SALDO": 1250,
+            "QNAS TOMADAS A CUENTA": 0,
+            "ABONO": 100,
+            "EN COBRO": ""
+        }]))
+
+        self.assertEqual(resultado.loc[0, "PAGADO"], -250)
+        self.assertEqual(resultado.loc[0, "PORCENTAJE PAGADO"], 0)
+        self.assertEqual(resultado.loc[0, "ESTATUS"], "REVISAR SALDO")
+        self.assertEqual(resultado.loc[0, "MOTIVO"], "SALDO mayor que VTA")
+        self.assertFalse(resultado.loc[0, "INCLUIR"])
 
     def test_resumen_solo_considera_facturas_incluidas(self):
         facturas = self.facturas.head(2).copy()

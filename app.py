@@ -40,13 +40,13 @@ st.set_page_config(
 )
 
 PROMOTORES = [
-    "Victor Vega",
+    "Víctor Vega",
     "Juan Manuel",
-    "Leonardo Arevalo",
+    "Leonardo Arévalo",
     "Eliezer Chipuli",
     "Gerardo Santana",
     "Sergio Valadez",
-    "Sergio Vazquez"
+    "Sergio Vázquez"
 ]
 
 CODIGOS_FORMATO = [

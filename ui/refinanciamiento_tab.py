@@ -77,6 +77,21 @@ def render_refinanciamiento(
             pd.DataFrame()
         )
         if isinstance(resultados, pd.DataFrame) and not resultados.empty:
+            st.dataframe(
+                resultados[[
+                    "cliente",
+                    "rfc",
+                    "facturas_encontradas",
+                    "saldo_total"
+                ]].rename(columns={
+                    "cliente": "Cliente",
+                    "rfc": "RFC",
+                    "facturas_encontradas": "Facturas encontradas",
+                    "saldo_total": "Saldo total"
+                }).style.format({"Saldo total": "${:,.2f}"}),
+                use_container_width=True,
+                hide_index=True
+            )
             clientes = resultados.to_dict(orient="records")
             indice = st.selectbox(
                 "Cliente encontrado",
@@ -170,22 +185,70 @@ def render_refinanciamiento(
         st.info("Busca y selecciona un cliente para cargar sus facturas.")
         return
 
-    st.markdown("### B. Facturas encontradas")
+    facturas_calculadas = calcular_facturas_refinanciamiento(facturas_base)
+    resumen_inicial = calcular_resumen_refinanciamiento(
+        facturas_calculadas,
+        aumento
+    )
+    aptas = facturas_calculadas["ESTATUS"].eq("APTA")
+    no_aptas = ~aptas
+
+    st.markdown("### B. Resumen del Cliente")
+    with st.container(border=True):
+        st.markdown(f"**{cliente_nombre}**  \nRFC: `{rfc or 'Sin RFC'}`")
+        col_facturas, col_saldo, col_vta = st.columns(3)
+        col_facturas.metric(
+            "Facturas encontradas",
+            len(facturas_calculadas)
+        )
+        col_saldo.metric(
+            "Saldo total",
+            formato_moneda(float(facturas_calculadas["SALDO"].sum()))
+        )
+        col_vta.metric(
+            "Total VTA",
+            formato_moneda(float(facturas_calculadas["VTA"].sum()))
+        )
+        col_aptas, col_no_aptas, col_venta = st.columns(3)
+        col_aptas.metric("Facturas aptas", int(aptas.sum()))
+        col_no_aptas.metric("Facturas no aptas", int(no_aptas.sum()))
+        col_venta.metric(
+            "Venta posible estimada (72)",
+            formato_moneda(
+                resumen_inicial["simulacion"][72]["VENTA POSIBLE"]
+            )
+        )
+
+    st.markdown("### C. Facturas Encontradas")
     st.caption(
         "FACT, VTA y SALDO vienen de PostgreSQL. Solo puedes cambiar "
         "INCLUIR, quincenas, ABONO y EN COBRO."
     )
     version = st.session_state.get("refi_editor_version", 0)
     facturas_editadas = st.data_editor(
-        calcular_facturas_refinanciamiento(facturas_base),
+        facturas_calculadas,
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
+        column_order=[
+            "INCLUIR",
+            "FACT",
+            "VTA",
+            "PAGADO",
+            "SALDO",
+            "QNAS TOMADAS A CUENTA",
+            "ABONO",
+            "ABONO DE QUINCENAS CONS",
+            "SALDO PENDIENTE",
+            "EN COBRO",
+            "PORCENTAJE PAGADO",
+            "ESTATUS"
+        ],
         disabled=[
             "FACT", "VTA", "PAGADO", "SALDO",
             "ABONO DE QUINCENAS CONS", "SALDO PENDIENTE",
             "PORCENTAJE PAGADO", "REFINANCIAMIENTO",
-            "PUEDE REFINANCIAR", "ESTADO"
+            "PUEDE REFINANCIAR", "ESTATUS", "MOTIVO"
         ],
         column_config={
             "INCLUIR": st.column_config.CheckboxColumn("INCLUIR"),
@@ -211,6 +274,14 @@ def render_refinanciamiento(
     facturas = calcular_facturas_refinanciamiento(facturas_editadas)
     st.session_state["refi_facturas_db"] = facturas.copy()
 
+    saldos_anomalos = facturas["ESTATUS"].eq("REVISAR SALDO")
+    if saldos_anomalos.any():
+        st.warning(
+            f"Hay {int(saldos_anomalos.sum())} factura(s) con SALDO mayor "
+            "que VTA. Se marcaron como REVISAR SALDO y no se incluyeron "
+            "automáticamente."
+        )
+
     no_aptas = facturas["PUEDE REFINANCIAR"].eq("NO")
     if st.button(
         f"Quitar no aptas ({int(no_aptas.sum())})",
@@ -224,9 +295,12 @@ def render_refinanciamiento(
 
     quitadas = st.session_state.pop("refi_no_aptas_quitadas", None)
     if quitadas is not None:
-        st.success(f"Se desmarcaron {quitadas} factura(s) no apta(s).")
+        st.success(
+            f"Se excluyeron {quitadas} facturas por tener menos del 40% "
+            "pagado o requerir revisión de saldo."
+        )
 
-    st.markdown("### C. Excluidas / no aptas")
+    st.markdown("### D. Facturas No Aptas / Excluidas")
     excluidas = facturas[
         (~facturas["INCLUIR"]) | facturas["PUEDE REFINANCIAR"].eq("NO")
     ]
@@ -240,7 +314,7 @@ def render_refinanciamiento(
         st.dataframe(
             excluidas[[
                 "FACT", "VTA", "SALDO", "PORCENTAJE PAGADO",
-                "INCLUIR", "ESTADO"
+                "INCLUIR", "MOTIVO"
             ]].style.format({
                 "VTA": "${:,.2f}",
                 "SALDO": "${:,.2f}",
@@ -251,7 +325,7 @@ def render_refinanciamiento(
         )
 
     resumen = calcular_resumen_refinanciamiento(facturas, aumento)
-    st.markdown("### D. Simulación")
+    st.markdown("### E. Simulación de Refinanciamiento")
     simulacion = dataframe_simulacion(resumen)
     filas_destacadas = {
         "VENTA POSIBLE", "DESCUENTO NUEVO", "TOTAL ADEUDO CLIENTE"
@@ -268,7 +342,7 @@ def render_refinanciamiento(
         use_container_width=True
     )
 
-    st.markdown("### E. Resultados")
+    st.markdown("### F. Resultados")
     destacado = resumen["simulacion"][72]
     col_venta, col_descuento, col_adeudo = st.columns(3)
     col_venta.metric(
@@ -283,13 +357,21 @@ def render_refinanciamiento(
         "TOTAL ADEUDO CLIENTE (72)",
         formato_moneda(destacado["TOTAL ADEUDO CLIENTE"])
     )
+    col_incluidas, col_excluidas = st.columns(2)
+    col_incluidas.metric(
+        "FACTURAS INCLUIDAS",
+        int(facturas["INCLUIR"].sum())
+    )
+    col_excluidas.metric(
+        "FACTURAS EXCLUIDAS",
+        int((~facturas["INCLUIR"]).sum())
+    )
     st.caption(
-        f"Facturas incluidas: {int(facturas['INCLUIR'].sum())} | "
         f"Total pagado: {formato_moneda(resumen['total_pagado'])} | "
         f"Saldo pendiente: {formato_moneda(resumen['total_saldo_pendiente'])}"
     )
 
-    st.markdown("### F. Exportar")
+    st.markdown("### G. Exportación")
     datos_cliente = {
         "fecha": fecha,
         "semana": int(semana),
