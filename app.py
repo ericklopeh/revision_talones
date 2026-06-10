@@ -685,15 +685,11 @@ def limpiar_estado_refinanciamiento():
         "ref_cliente_actual",
         "refi_facturas_db",
         "refi_facturas_editor",
-        "refi_editor_version"
+        "refi_incluir_por_sale_id"
     ]
 
     for clave in claves:
         st.session_state.pop(clave, None)
-
-    for clave in list(st.session_state):
-        if clave.startswith("refi_facturas_editor_"):
-            st.session_state.pop(clave, None)
 
     st.session_state["refi_limpieza_confirmada"] = True
 

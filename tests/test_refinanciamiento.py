@@ -10,6 +10,8 @@ from openpyxl import load_workbook
 
 from utils.refinanciamiento import (
     COLUMNAS_MANUALES,
+    actualizar_inclusiones_por_sale_id,
+    aplicar_inclusiones_por_sale_id,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
     construir_carpeta_refinanciamiento,
@@ -360,20 +362,92 @@ class RefinanciamientoTest(unittest.TestCase):
                 "venta_id": 1,
                 "fact": "APTA",
                 "vta": 1000,
+                "pagado_db": 400,
                 "saldo": 600
             },
             {
                 "venta_id": 2,
                 "fact": "NO APTA",
                 "vta": 1000,
+                "pagado_db": 399,
                 "saldo": 601
             }
         ]))
 
         self.assertTrue(resultado.loc[0, "INCLUIR"])
         self.assertFalse(resultado.loc[1, "INCLUIR"])
+        self.assertEqual(resultado.loc[0, "PAGADO"], 400)
+        self.assertEqual(resultado.loc[0, "SALDO"], 600)
+        self.assertEqual(resultado.loc[0, "ABONO"], 13.89)
         self.assertEqual(resultado.loc[0, "ESTATUS"], "APTA")
         self.assertEqual(resultado.loc[1, "ESTATUS"], "NO APTA")
+
+    def test_ejemplo_excel_desde_pagado_db(self):
+        facturas_bd = pd.DataFrame([
+            {"fact": "12546", "vta": 58564, "pagado_db": 42117.20},
+            {"fact": "12547", "vta": 28693.43, "pagado_db": 20324.52},
+            {"fact": "12622", "vta": 29966.96, "pagado_db": 19978.08},
+            {"fact": "12801", "vta": 22251.39, "pagado_db": 12671.05},
+            {"fact": "12719", "vta": 40994.80, "pagado_db": 26191.02}
+        ])
+
+        resultado = preparar_facturas_desde_bd(facturas_bd)
+        resumen = calcular_resumen_refinanciamiento(resultado, 0)
+
+        self.assertTrue(resultado["INCLUIR"].all())
+        self.assertEqual(resumen["total_vta"], 180470.58)
+        self.assertEqual(resumen["total_pagado"], 121281.87)
+        self.assertEqual(resumen["total_saldo_pendiente"], 59188.71)
+        self.assertEqual(resumen["abono_ref"], 2506.54)
+        self.assertEqual(
+            resumen["simulacion"][72]["VENTA POSIBLE"],
+            121282.17
+        )
+
+    def test_incluir_persiste_por_sale_id_sin_depender_del_indice(self):
+        facturas = preparar_facturas_desde_bd(pd.DataFrame([
+            {
+                "venta_id": 501,
+                "fact": "APTA",
+                "vta": 1000,
+                "pagado_db": 500
+            },
+            {
+                "venta_id": 502,
+                "fact": "NO APTA",
+                "vta": 1000,
+                "pagado_db": 300
+            }
+        ]))
+        selecciones = {}
+        aplicar_inclusiones_por_sale_id(facturas, selecciones)
+
+        facturas_editadas = facturas.copy()
+        facturas_editadas.loc[
+            facturas_editadas["VENTA_ID"].eq(501),
+            "INCLUIR"
+        ] = False
+        facturas_editadas.loc[
+            facturas_editadas["VENTA_ID"].eq(502),
+            "INCLUIR"
+        ] = True
+        actualizar_inclusiones_por_sale_id(
+            facturas_editadas,
+            selecciones
+        )
+
+        recalculadas = calcular_facturas_refinanciamiento(
+            facturas.sample(frac=1, random_state=7).reset_index(drop=True)
+        )
+        restauradas = aplicar_inclusiones_por_sale_id(
+            recalculadas,
+            selecciones
+        ).set_index("VENTA_ID")
+
+        self.assertFalse(restauradas.loc[501, "INCLUIR"])
+        self.assertTrue(restauradas.loc[502, "INCLUIR"])
+        resumen = calcular_resumen_refinanciamiento(restauradas, 0)
+        self.assertEqual(resumen["total_vta"], 1000)
 
     def test_saldo_mayor_a_vta_se_marca_para_revision(self):
         resultado = calcular_facturas_refinanciamiento(pd.DataFrame([{

@@ -6,6 +6,8 @@ import streamlit as st
 from services.refinanciamiento_db import RefinanciamientoDatabaseError
 from utils.refinanciamiento import (
     OUTPUT_REFINANCIAMIENTO_DIR,
+    actualizar_inclusiones_por_sale_id,
+    aplicar_inclusiones_por_sale_id,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
     dataframe_simulacion,
@@ -115,12 +117,20 @@ def render_refinanciamiento(
                         cliente["cliente_id"]
                     )
                     st.session_state["ref_cliente_actual"] = cliente
+                    facturas_preparadas = preparar_facturas_desde_bd(
+                        facturas_bd
+                    )
+                    incluir_por_sale_id = st.session_state.setdefault(
+                        "refi_incluir_por_sale_id",
+                        {}
+                    )
                     st.session_state["refi_facturas_db"] = (
-                        preparar_facturas_desde_bd(facturas_bd)
+                        aplicar_inclusiones_por_sale_id(
+                            facturas_preparadas,
+                            incluir_por_sale_id
+                        )
                     )
-                    st.session_state["refi_editor_version"] = (
-                        st.session_state.get("refi_editor_version", 0) + 1
-                    )
+                    st.session_state.pop("refi_facturas_editor", None)
                     st.rerun()
                 except RefinanciamientoDatabaseError as error:
                     st.error(str(error))
@@ -185,7 +195,14 @@ def render_refinanciamiento(
         st.info("Busca y selecciona un cliente para cargar sus facturas.")
         return
 
-    facturas_calculadas = calcular_facturas_refinanciamiento(facturas_base)
+    incluir_por_sale_id = st.session_state.setdefault(
+        "refi_incluir_por_sale_id",
+        {}
+    )
+    facturas_calculadas = aplicar_inclusiones_por_sale_id(
+        calcular_facturas_refinanciamiento(facturas_base),
+        incluir_por_sale_id
+    )
     resumen_inicial = calcular_resumen_refinanciamiento(
         facturas_calculadas,
         aumento
@@ -224,7 +241,23 @@ def render_refinanciamiento(
         "FACT, VTA y SALDO vienen de PostgreSQL. Solo puedes cambiar "
         "INCLUIR, quincenas, ABONO y EN COBRO."
     )
-    version = st.session_state.get("refi_editor_version", 0)
+    no_aptas = facturas_calculadas["PUEDE REFINANCIAR"].eq("NO")
+    if st.button(
+        f"Quitar no aptas ({int(no_aptas.sum())})",
+        key="ref_quitar_no_aptas"
+    ):
+        for _, fila in facturas_calculadas.loc[no_aptas].iterrows():
+            incluir_por_sale_id[int(fila["VENTA_ID"])] = False
+        st.session_state["refi_facturas_db"] = (
+            aplicar_inclusiones_por_sale_id(
+                facturas_calculadas,
+                incluir_por_sale_id
+            )
+        )
+        st.session_state.pop("refi_facturas_editor", None)
+        st.session_state["refi_no_aptas_quitadas"] = int(no_aptas.sum())
+        st.rerun()
+
     facturas_editadas = st.data_editor(
         facturas_calculadas,
         use_container_width=True,
@@ -269,9 +302,16 @@ def render_refinanciamiento(
                 "% PAGADO", min_value=0.0, max_value=1.0, format="%.0f%%"
             )
         },
-        key=f"refi_facturas_editor_{version}"
+        key="refi_facturas_editor"
     )
-    facturas = calcular_facturas_refinanciamiento(facturas_editadas)
+    actualizar_inclusiones_por_sale_id(
+        facturas_editadas,
+        incluir_por_sale_id
+    )
+    facturas = aplicar_inclusiones_por_sale_id(
+        calcular_facturas_refinanciamiento(facturas_editadas),
+        incluir_por_sale_id
+    )
     st.session_state["refi_facturas_db"] = facturas.copy()
 
     saldos_anomalos = facturas["ESTATUS"].eq("REVISAR SALDO")
@@ -281,17 +321,6 @@ def render_refinanciamiento(
             "que VTA. Se marcaron como REVISAR SALDO y no se incluyeron "
             "automáticamente."
         )
-
-    no_aptas = facturas["PUEDE REFINANCIAR"].eq("NO")
-    if st.button(
-        f"Quitar no aptas ({int(no_aptas.sum())})",
-        key="ref_quitar_no_aptas"
-    ):
-        facturas.loc[no_aptas, "INCLUIR"] = False
-        st.session_state["refi_facturas_db"] = facturas
-        st.session_state["refi_editor_version"] = version + 1
-        st.session_state["refi_no_aptas_quitadas"] = int(no_aptas.sum())
-        st.rerun()
 
     quitadas = st.session_state.pop("refi_no_aptas_quitadas", None)
     if quitadas is not None:

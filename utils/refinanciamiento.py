@@ -235,10 +235,17 @@ def preparar_facturas_desde_bd(df: pd.DataFrame) -> pd.DataFrame:
     facturas = df.rename(columns={
         "fact": "FACT",
         "vta": "VTA",
+        "pagado_db": "PAGADO",
         "saldo": "SALDO",
         "venta_id": "VENTA_ID"
     }).copy()
-    facturas["ABONO"] = 0.0
+    facturas["VTA"] = facturas["VTA"].map(convertir_numero)
+    if "PAGADO" in facturas:
+        facturas["PAGADO"] = facturas["PAGADO"].map(convertir_numero)
+        facturas["SALDO"] = (
+            facturas["VTA"] - facturas["PAGADO"]
+        ).round(2)
+    facturas["ABONO"] = (facturas["VTA"] / 72).round(2)
     facturas["EN COBRO"] = ""
     facturas["QNAS TOMADAS A CUENTA"] = 0
     facturas["INCLUIR"] = True
@@ -246,6 +253,51 @@ def preparar_facturas_desde_bd(df: pd.DataFrame) -> pd.DataFrame:
     calculadas = calcular_facturas_refinanciamiento(facturas)
     calculadas["INCLUIR"] = calculadas["ESTATUS"].eq("APTA")
     return calculadas
+
+
+def normalizar_sale_id(valor):
+    if valor is None or pd.isna(valor):
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return str(valor)
+
+
+def aplicar_inclusiones_por_sale_id(
+    facturas: pd.DataFrame,
+    incluir_por_sale_id: dict
+) -> pd.DataFrame:
+    resultado = facturas.copy()
+    if "VENTA_ID" not in resultado:
+        return resultado
+
+    for indice, fila in resultado.iterrows():
+        sale_id = normalizar_sale_id(fila["VENTA_ID"])
+        if sale_id is None:
+            continue
+        if sale_id not in incluir_por_sale_id:
+            incluir_por_sale_id[sale_id] = bool(fila["INCLUIR"])
+        resultado.at[indice, "INCLUIR"] = bool(
+            incluir_por_sale_id[sale_id]
+        )
+
+    return resultado
+
+
+def actualizar_inclusiones_por_sale_id(
+    facturas: pd.DataFrame,
+    incluir_por_sale_id: dict
+) -> dict:
+    if "VENTA_ID" not in facturas:
+        return incluir_por_sale_id
+
+    for _, fila in facturas.iterrows():
+        sale_id = normalizar_sale_id(fila["VENTA_ID"])
+        if sale_id is not None:
+            incluir_por_sale_id[sale_id] = bool(fila["INCLUIR"])
+
+    return incluir_por_sale_id
 
 
 def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
@@ -326,7 +378,10 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         incluir_default
     ).map(lambda valor: bool(valor) if not pd.isna(valor) else False)
 
-    columnas_salida = [
+    columnas_salida = []
+    if "VENTA_ID" in resultado:
+        columnas_salida.append("VENTA_ID")
+    columnas_salida.extend([
         "INCLUIR",
         "FACT",
         "VTA",
@@ -342,7 +397,7 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         "PUEDE REFINANCIAR",
         "ESTATUS",
         "MOTIVO"
-    ]
+    ])
     return resultado[columnas_salida]
 
 

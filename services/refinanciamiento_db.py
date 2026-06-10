@@ -109,6 +109,7 @@ def buscar_clientes(
         )
 
     condiciones = []
+    puntuaciones = []
     parametros = {"limite": int(limite)}
     for indice, token in enumerate(tokens):
         parametro = f"token_{indice}"
@@ -119,17 +120,42 @@ def buscar_clientes(
                 OR COALESCE(c.rfc, '') ILIKE :{parametro}
             )"""
         )
+        puntuaciones.append(
+            f"""CASE WHEN (
+                COALESCE(c.first_name, '') ILIKE :{parametro}
+                OR COALESCE(c.last_name, '') ILIKE :{parametro}
+                OR COALESCE(c.rfc, '') ILIKE :{parametro}
+            ) THEN 1 ELSE 0 END"""
+        )
         parametros[parametro] = f"%{token}%"
 
     consulta = text(
         f"""
-        WITH saldos_por_venta AS (
+        WITH ventas_por_venta AS (
+            SELECT
+                si.sale_id,
+                COALESCE(SUM(si.real), 0) AS vta
+            FROM sales_saleitem si
+            GROUP BY si.sale_id
+        ),
+        pagos_por_venta AS (
             SELECT
                 p.sale_id,
-                COALESCE(SUM(i.amount), 0) AS saldo
+                COALESCE(SUM(i.amount), 0) AS pagado
             FROM payments_payment p
             JOIN payments_installment i ON i.payment_id = p.id
             GROUP BY p.sale_id
+        ),
+        facturas AS (
+            SELECT
+                s.id,
+                s.customer_id,
+                COALESCE(vpv.vta, 0) AS vta,
+                COALESCE(ppv.pagado, 0) AS pagado,
+                COALESCE(vpv.vta, 0) - COALESCE(ppv.pagado, 0) AS saldo
+            FROM sales_sale s
+            LEFT JOIN ventas_por_venta vpv ON vpv.sale_id = s.id
+            LEFT JOIN pagos_por_venta ppv ON ppv.sale_id = s.id
         )
         SELECT
             c.id AS cliente_id,
@@ -139,15 +165,18 @@ def buscar_clientes(
                 NULLIF(c.last_name, '')
             )) AS cliente,
             COALESCE(c.rfc, '') AS rfc,
-            COUNT(DISTINCT s.id) AS facturas_encontradas,
-            COALESCE(SUM(spv.saldo), 0) AS saldo_total
+            COUNT(DISTINCT f.id) AS facturas_encontradas,
+            COALESCE(SUM(f.saldo), 0) AS saldo_total
         FROM customers_customer c
-        JOIN sales_sale s ON s.customer_id = c.id
-        JOIN saldos_por_venta spv ON spv.sale_id = s.id
+        JOIN facturas f ON f.customer_id = c.id
         WHERE {" OR ".join(condiciones)}
+          AND f.saldo > 0
         GROUP BY c.id, c.first_name, c.last_name, c.rfc
-        HAVING COALESCE(SUM(spv.saldo), 0) > 0
-        ORDER BY c.first_name, c.last_name, c.rfc
+        HAVING COALESCE(SUM(f.saldo), 0) > 0
+        ORDER BY ({" + ".join(puntuaciones)}) DESC,
+                 c.first_name,
+                 c.last_name,
+                 c.rfc
         LIMIT :limite
         """
     )
@@ -178,10 +207,10 @@ def cargar_facturas_cliente(
             FROM sales_saleitem si
             GROUP BY si.sale_id
         ),
-        saldos AS (
+        pagos AS (
             SELECT
                 p.sale_id,
-                COALESCE(SUM(i.amount), 0) AS saldo
+                COALESCE(SUM(i.amount), 0) AS pagado
             FROM payments_payment p
             JOIN payments_installment i ON i.payment_id = p.id
             GROUP BY p.sale_id
@@ -197,13 +226,14 @@ def cargar_facturas_cliente(
             )) AS cliente,
             COALESCE(c.rfc, '') AS rfc,
             COALESCE(v.vta, 0) AS vta,
-            COALESCE(sa.saldo, 0) AS saldo
+            COALESCE(pa.pagado, 0) AS pagado_db,
+            COALESCE(v.vta, 0) - COALESCE(pa.pagado, 0) AS saldo
         FROM sales_sale s
         JOIN customers_customer c ON c.id = s.customer_id
         LEFT JOIN ventas v ON v.sale_id = s.id
-        LEFT JOIN saldos sa ON sa.sale_id = s.id
+        LEFT JOIN pagos pa ON pa.sale_id = s.id
         WHERE c.id = :cliente_id
-          AND COALESCE(sa.saldo, 0) > 0
+          AND COALESCE(v.vta, 0) - COALESCE(pa.pagado, 0) > 0
         ORDER BY s.folio
         """
     )
