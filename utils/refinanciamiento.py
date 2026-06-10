@@ -340,7 +340,7 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     resultado.loc[tiene_venta, "PORCENTAJE PAGADO"] = (
         resultado.loc[tiene_venta, "PAGADO"]
         / resultado.loc[tiene_venta, "VTA"]
-    )
+    ) * 100
     resultado["PORCENTAJE PAGADO"] = resultado[
         "PORCENTAJE PAGADO"
     ].clip(lower=0).round(6)
@@ -354,7 +354,7 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     resultado.loc[fila_activa, "PUEDE REFINANCIAR"] = resultado.loc[
         fila_activa,
         "PORCENTAJE PAGADO"
-    ].map(lambda porcentaje: "SI" if porcentaje >= 0.40 else "NO")
+    ].map(lambda porcentaje: "SI" if porcentaje >= 40 else "NO")
     saldo_anomalo = fila_activa & (resultado["SALDO"] > resultado["VTA"])
     resultado.loc[saldo_anomalo, "PUEDE REFINANCIAR"] = "NO"
 
@@ -502,7 +502,7 @@ def generar_excel_refinanciamiento(
     encabezado_font = Font(color="FFFFFF", bold=True)
     subtitulo_fill = PatternFill("solid", fgColor="D9EAF7")
     moneda = '$ #,##0.00;-$ #,##0.00;$ -'
-    porcentaje = "0%"
+    porcentaje = '0"%"'
 
     columnas_facturas = [
         "INCLUIR",
@@ -725,7 +725,7 @@ def generar_pdf_refinanciamiento(
             f"{factura['QNAS TOMADAS A CUENTA']:,.0f}",
             f"${factura['ABONO']:,.2f}",
             f"${factura['SALDO PENDIENTE']:,.2f}",
-            f"{factura['PORCENTAJE PAGADO']:.0%}",
+            f"{factura['PORCENTAJE PAGADO']:.0f}%",
             factura["ESTATUS"]
         ])
 

@@ -1672,7 +1672,7 @@ if False:
             "ABONO": "${:,.2f}",
             "ABONO DE QUINCENAS": "${:,.2f}",
             "SALDO PENDIENTE": "${:,.2f}",
-            "PORCENTAJE PAGADO": "{:.0%}",
+            "PORCENTAJE PAGADO": "{:.0f}%",
             "REFINANCIAMIENTO": "${:,.2f}"
         }),
         use_container_width=True,

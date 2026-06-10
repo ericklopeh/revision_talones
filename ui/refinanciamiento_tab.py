@@ -299,7 +299,7 @@ def render_refinanciamiento(
                 "QNAS TOMADAS A CUENTA", min_value=0, step=1, format="%d"
             ),
             "PORCENTAJE PAGADO": st.column_config.ProgressColumn(
-                "% PAGADO", min_value=0.0, max_value=1.0, format="%.0f%%"
+                "% PAGADO", min_value=0.0, max_value=100.0, format="%.0f%%"
             )
         },
         key="refi_facturas_editor"
@@ -347,7 +347,7 @@ def render_refinanciamiento(
             ]].style.format({
                 "VTA": "${:,.2f}",
                 "SALDO": "${:,.2f}",
-                "PORCENTAJE PAGADO": "{:.0%}"
+                "PORCENTAJE PAGADO": "{:.0f}%"
             }),
             use_container_width=True,
             hide_index=True

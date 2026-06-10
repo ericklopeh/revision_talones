@@ -233,8 +233,8 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(resultado.loc[0, "PAGADO"], 42117.20)
         self.assertAlmostEqual(
             resultado.loc[0, "PORCENTAJE PAGADO"],
-            0.719165,
-            places=6
+            71.92,
+            places=2
         )
         self.assertEqual(resultado.loc[0, "REFINANCIAMIENTO"], 42117.20)
         self.assertEqual(resultado.loc[0, "PUEDE REFINANCIAR"], "SI")
@@ -264,7 +264,10 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertTrue(workbook["Facturas"]["A2"].value)
         self.assertEqual(workbook["Facturas"]["B2"].value, "12546")
         self.assertEqual(workbook["Facturas"]["D2"].value, 42117.20)
-        self.assertEqual(workbook["Facturas"]["K2"].number_format, "0%")
+        self.assertEqual(
+            workbook["Facturas"]["K2"].number_format,
+            '0"%"'
+        )
         self.assertEqual(
             workbook["Resumen Refinanciamiento"]["B3"].value,
             23
@@ -395,6 +398,20 @@ class RefinanciamientoTest(unittest.TestCase):
         resumen = calcular_resumen_refinanciamiento(resultado, 0)
 
         self.assertTrue(resultado["INCLUIR"].all())
+        porcentajes = dict(zip(
+            resultado["FACT"].astype(str),
+            resultado["PORCENTAJE PAGADO"].round()
+        ))
+        self.assertEqual(
+            porcentajes,
+            {
+                "12546": 72,
+                "12547": 71,
+                "12622": 67,
+                "12801": 57,
+                "12719": 64
+            }
+        )
         self.assertEqual(resumen["total_vta"], 180470.58)
         self.assertEqual(resumen["total_pagado"], 121281.87)
         self.assertEqual(resumen["total_saldo_pendiente"], 59188.71)
