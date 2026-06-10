@@ -421,6 +421,46 @@ class RefinanciamientoTest(unittest.TestCase):
             121282.17
         )
 
+    def test_ejemplo_nora_con_plazo_46(self):
+        facturas_bd = pd.DataFrame([
+            {
+                "venta_id": 13693,
+                "fact": "13262",
+                "plazo_venta": 46,
+                "vta": 29040,
+                "pagado_db": 13257.30
+            },
+            {
+                "venta_id": 13694,
+                "fact": "13263",
+                "plazo_venta": 46,
+                "vta": 37415.94,
+                "pagado_db": 17081.19
+            }
+        ])
+
+        resultado = preparar_facturas_desde_bd(facturas_bd)
+        resumen = calcular_resumen_refinanciamiento(resultado, 0)
+
+        self.assertEqual(resultado["ABONO"].tolist(), [631.30, 813.39])
+        self.assertTrue(resultado["INCLUIR"].all())
+        self.assertEqual(resumen["total_vta"], 66455.94)
+        self.assertEqual(resumen["total_pagado"], 30338.49)
+        self.assertEqual(resumen["total_saldo_pendiente"], 36117.45)
+        self.assertEqual(resumen["abono_ref"], 1444.69)
+        self.assertEqual(
+            resumen["simulacion"][72]["VENTA POSIBLE"],
+            67900.23
+        )
+        self.assertEqual(
+            resumen["simulacion"][46]["TOTAL SALDO NUEVO"],
+            66455.74
+        )
+        self.assertEqual(
+            resumen["simulacion"][34]["VENTA POSIBLE"],
+            13002.01
+        )
+
     def test_incluir_persiste_por_sale_id_sin_depender_del_indice(self):
         facturas = preparar_facturas_desde_bd(pd.DataFrame([
             {

@@ -237,7 +237,8 @@ def preparar_facturas_desde_bd(df: pd.DataFrame) -> pd.DataFrame:
         "vta": "VTA",
         "pagado_db": "PAGADO",
         "saldo": "SALDO",
-        "venta_id": "VENTA_ID"
+        "venta_id": "VENTA_ID",
+        "plazo_venta": "PLAZO_VENTA"
     }).copy()
     facturas["VTA"] = facturas["VTA"].map(convertir_numero)
     if "PAGADO" in facturas:
@@ -245,7 +246,16 @@ def preparar_facturas_desde_bd(df: pd.DataFrame) -> pd.DataFrame:
         facturas["SALDO"] = (
             facturas["VTA"] - facturas["PAGADO"]
         ).round(2)
-    facturas["ABONO"] = (facturas["VTA"] / 72).round(2)
+    if "PLAZO_VENTA" in facturas:
+        plazos = facturas["PLAZO_VENTA"].map(convertir_numero)
+        facturas["ABONO"] = 0.0
+        plazo_valido = plazos > 0
+        facturas.loc[plazo_valido, "ABONO"] = (
+            facturas.loc[plazo_valido, "VTA"]
+            / plazos.loc[plazo_valido]
+        ).round(2)
+    else:
+        facturas["ABONO"] = (facturas["VTA"] / 72).round(2)
     facturas["EN COBRO"] = ""
     facturas["QNAS TOMADAS A CUENTA"] = 0
     facturas["INCLUIR"] = True
@@ -379,8 +389,9 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     ).map(lambda valor: bool(valor) if not pd.isna(valor) else False)
 
     columnas_salida = []
-    if "VENTA_ID" in resultado:
-        columnas_salida.append("VENTA_ID")
+    for columna_identidad in ["VENTA_ID", "PLAZO_VENTA"]:
+        if columna_identidad in resultado:
+            columnas_salida.append(columna_identidad)
     columnas_salida.extend([
         "INCLUIR",
         "FACT",

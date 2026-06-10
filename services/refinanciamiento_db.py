@@ -131,31 +131,57 @@ def buscar_clientes(
 
     consulta = text(
         f"""
-        WITH ventas_por_venta AS (
+        WITH importes_articulos AS (
             SELECT
                 si.sale_id,
-                COALESCE(SUM(si.real), 0) AS vta
+                COALESCE(SUM(si.real), 0) AS vta_real
             FROM sales_saleitem si
+            WHERE NOT COALESCE(si.is_removed, false)
             GROUP BY si.sale_id
         ),
         pagos_por_venta AS (
             SELECT
                 p.sale_id,
-                COALESCE(SUM(i.amount), 0) AS pagado
+                COALESCE(SUM(i.amount), 0) AS pagado,
+                MODE() WITHIN GROUP (ORDER BY i.amount)
+                    FILTER (WHERE i.amount > 0) AS abono_periodico
             FROM payments_payment p
             JOIN payments_installment i ON i.payment_id = p.id
+            WHERE NOT COALESCE(p.is_removed, false)
+              AND NOT COALESCE(i.is_removed, false)
             GROUP BY p.sale_id
         ),
         facturas AS (
             SELECT
                 s.id,
                 s.customer_id,
-                COALESCE(vpv.vta, 0) AS vta,
+                CASE
+                    WHEN ppv.abono_periodico IS NULL
+                        OR COALESCE(s.time_limit, 0) <= 0
+                        THEN COALESCE(ia.vta_real, 0)
+                    WHEN ABS(
+                        COALESCE(ia.vta_real, 0)
+                        - (ppv.abono_periodico * s.time_limit)
+                    ) <= 1
+                        THEN COALESCE(ia.vta_real, 0)
+                    ELSE ppv.abono_periodico * s.time_limit
+                END AS vta,
                 COALESCE(ppv.pagado, 0) AS pagado,
-                COALESCE(vpv.vta, 0) - COALESCE(ppv.pagado, 0) AS saldo
+                CASE
+                    WHEN ppv.abono_periodico IS NULL
+                        OR COALESCE(s.time_limit, 0) <= 0
+                        THEN COALESCE(ia.vta_real, 0)
+                    WHEN ABS(
+                        COALESCE(ia.vta_real, 0)
+                        - (ppv.abono_periodico * s.time_limit)
+                    ) <= 1
+                        THEN COALESCE(ia.vta_real, 0)
+                    ELSE ppv.abono_periodico * s.time_limit
+                END - COALESCE(ppv.pagado, 0) AS saldo
             FROM sales_sale s
-            LEFT JOIN ventas_por_venta vpv ON vpv.sale_id = s.id
+            LEFT JOIN importes_articulos ia ON ia.sale_id = s.id
             LEFT JOIN pagos_por_venta ppv ON ppv.sale_id = s.id
+            WHERE NOT COALESCE(s.is_removed, false)
         )
         SELECT
             c.id AS cliente_id,
@@ -200,24 +226,54 @@ def cargar_facturas_cliente(
 ) -> pd.DataFrame:
     consulta = text(
         """
-        WITH ventas AS (
+        WITH importes_articulos AS (
             SELECT
                 si.sale_id,
-                COALESCE(SUM(si.real), 0) AS vta
+                COALESCE(SUM(si.real), 0) AS vta_real
             FROM sales_saleitem si
+            WHERE NOT COALESCE(si.is_removed, false)
             GROUP BY si.sale_id
         ),
         pagos AS (
             SELECT
                 p.sale_id,
-                COALESCE(SUM(i.amount), 0) AS pagado
+                COALESCE(SUM(i.amount), 0) AS pagado,
+                MODE() WITHIN GROUP (ORDER BY i.amount)
+                    FILTER (WHERE i.amount > 0) AS abono_periodico
             FROM payments_payment p
             JOIN payments_installment i ON i.payment_id = p.id
+            WHERE NOT COALESCE(p.is_removed, false)
+              AND NOT COALESCE(i.is_removed, false)
             GROUP BY p.sale_id
+        ),
+        facturas AS (
+            SELECT
+                s.id,
+                s.folio,
+                s.customer_id,
+                s.time_limit AS plazo_venta,
+                COALESCE(ia.vta_real, 0) AS vta_real,
+                COALESCE(pa.pagado, 0) AS pagado,
+                pa.abono_periodico,
+                CASE
+                    WHEN pa.abono_periodico IS NULL
+                        OR COALESCE(s.time_limit, 0) <= 0
+                        THEN COALESCE(ia.vta_real, 0)
+                    WHEN ABS(
+                        COALESCE(ia.vta_real, 0)
+                        - (pa.abono_periodico * s.time_limit)
+                    ) <= 1
+                        THEN COALESCE(ia.vta_real, 0)
+                    ELSE pa.abono_periodico * s.time_limit
+                END AS vta
+            FROM sales_sale s
+            LEFT JOIN importes_articulos ia ON ia.sale_id = s.id
+            LEFT JOIN pagos pa ON pa.sale_id = s.id
+            WHERE NOT COALESCE(s.is_removed, false)
         )
         SELECT
-            s.id AS venta_id,
-            s.folio AS fact,
+            f.id AS venta_id,
+            f.folio AS fact,
             c.id AS cliente_id,
             TRIM(CONCAT_WS(
                 ' ',
@@ -225,16 +281,17 @@ def cargar_facturas_cliente(
                 NULLIF(c.last_name, '')
             )) AS cliente,
             COALESCE(c.rfc, '') AS rfc,
-            COALESCE(v.vta, 0) AS vta,
-            COALESCE(pa.pagado, 0) AS pagado_db,
-            COALESCE(v.vta, 0) - COALESCE(pa.pagado, 0) AS saldo
-        FROM sales_sale s
-        JOIN customers_customer c ON c.id = s.customer_id
-        LEFT JOIN ventas v ON v.sale_id = s.id
-        LEFT JOIN pagos pa ON pa.sale_id = s.id
+            f.plazo_venta,
+            f.vta_real,
+            f.abono_periodico,
+            f.vta,
+            f.pagado AS pagado_db,
+            f.vta - f.pagado AS saldo
+        FROM facturas f
+        JOIN customers_customer c ON c.id = f.customer_id
         WHERE c.id = :cliente_id
-          AND COALESCE(v.vta, 0) - COALESCE(pa.pagado, 0) > 0
-        ORDER BY s.folio
+          AND f.vta - f.pagado > 0
+        ORDER BY f.folio
         """
     )
 
@@ -249,3 +306,35 @@ def cargar_facturas_cliente(
         raise RefinanciamientoDatabaseError(
             f"No se pudieron cargar las facturas del cliente: {error}"
         ) from error
+
+
+def diagnosticar_vta_facturas(
+    engine: Engine,
+    folios: list
+) -> pd.DataFrame:
+    folios_limpios = [int(folio) for folio in folios]
+    consulta = text(
+        """
+        SELECT
+            s.id AS sale_id,
+            s.folio,
+            s.time_limit AS plazo_venta,
+            si.id AS saleitem_id,
+            si.quantity,
+            si.real,
+            si.price_id,
+            si.real * COALESCE(si.quantity, 1) AS real_por_cantidad
+        FROM sales_sale s
+        JOIN sales_saleitem si ON si.sale_id = s.id
+        WHERE s.folio = ANY(:folios)
+          AND NOT COALESCE(s.is_removed, false)
+          AND NOT COALESCE(si.is_removed, false)
+        ORDER BY s.folio, si.id
+        """
+    )
+    with engine.connect() as conexion:
+        return pd.read_sql(
+            consulta,
+            conexion,
+            params={"folios": folios_limpios}
+        )
