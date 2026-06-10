@@ -641,6 +641,27 @@ def render_cuentas_terminadas(
     return cuentas, True
 
 
+def limpiar_estado_refinanciamiento():
+    claves = [
+        "ref_fecha",
+        "ref_cliente",
+        "ref_rfc_nac",
+        "ref_vendedor",
+        "ref_semana",
+        "ref_quinquenio",
+        "ref_aumento_descuento",
+        "ref_forzar_1900",
+        "refi_facturas_input",
+        "refi_facturas_editor",
+        "ref_facturas"
+    ]
+
+    for clave in claves:
+        st.session_state.pop(clave, None)
+
+    st.session_state["refi_limpieza_confirmada"] = True
+
+
 st.markdown(
     """
     <style>
@@ -1429,6 +1450,14 @@ with tab_refinanciamiento:
         "Captura las facturas actuales, valida el porcentaje pagado y simula "
         "el nuevo saldo por plazo."
     )
+    st.button(
+        "Limpiar toda la captura",
+        key="refi_limpiar_todo",
+        on_click=limpiar_estado_refinanciamiento
+    )
+
+    if st.session_state.pop("refi_limpieza_confirmada", False):
+        st.success("La captura de refinanciamiento quedó limpia.")
 
     st.markdown("### 1. Datos del cliente")
     with st.container(border=True):
@@ -1580,11 +1609,6 @@ with tab_refinanciamiento:
         },
         key="refi_facturas_editor"
     )
-
-    if st.button("Limpiar facturas", key="refi_limpiar_facturas"):
-        st.session_state.pop(estado_facturas, None)
-        st.session_state.pop("refi_facturas_editor", None)
-        st.rerun()
 
     facturas_resultado = calcular_facturas_refinanciamiento(facturas_editadas)
     st.markdown("### 3. Tabla calculada por factura")
