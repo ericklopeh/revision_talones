@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import date, datetime
 from io import BytesIO
@@ -7,9 +8,21 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle
+)
 
 
 COLUMNAS_MANUALES = [
+    "INCLUIR",
     "FACT",
     "VTA",
     "SALDO",
@@ -20,15 +33,16 @@ COLUMNAS_MANUALES = [
 
 COLUMNAS_CALCULADAS = [
     "PAGADO",
-    "ABONO DE QUINCENAS",
+    "ABONO DE QUINCENAS CONS",
     "SALDO PENDIENTE",
     "PORCENTAJE PAGADO",
     "REFINANCIAMIENTO",
-    "PUEDE REFINANCIAR"
+    "PUEDE REFINANCIAR",
+    "ESTADO"
 ]
 
 PLAZOS_REFINANCIAMIENTO = [72, 60, 46, 34]
-OUTPUT_REFINANCIAMIENTO_DIR = Path("salidas")
+OUTPUT_REFINANCIAMIENTO_DIR = Path("REFINANCIAMIENTOS")
 
 
 def to_number(valor) -> float:
@@ -87,15 +101,13 @@ def construir_carpeta_refinanciamiento(
     )
 
 
-def nombre_archivo_refinanciamiento(cliente: str, semana: int) -> str:
-    cliente_archivo = (
-        slug_folder_name(cliente, reemplazar_espacios=True)
-        or "CLIENTE_SIN_NOMBRE"
-    )
-    return (
-        f"refinanciamiento_{cliente_archivo}_"
-        f"SEM_{int(semana):02d}.xlsx"
-    )
+def nombre_archivo_refinanciamiento(
+    cliente: str = "",
+    semana: int = 1,
+    extension: str = "xlsx"
+) -> str:
+    extension = str(extension or "xlsx").lower().lstrip(".")
+    return f"refinanciamiento.{extension}"
 
 
 def guardar_excel_refinanciamiento(
@@ -112,9 +124,42 @@ def guardar_excel_refinanciamiento(
         cliente=cliente
     )
     carpeta.mkdir(parents=True, exist_ok=True)
-    ruta = carpeta / nombre_archivo_refinanciamiento(cliente, semana)
+    ruta = carpeta / nombre_archivo_refinanciamiento(
+        cliente,
+        semana,
+        "xlsx"
+    )
     ruta.write_bytes(contenido)
     return ruta
+
+
+def guardar_archivos_refinanciamiento(
+    archivos: dict,
+    base_dir,
+    semana: int,
+    vendedor: str,
+    cliente: str
+) -> dict:
+    carpeta = construir_carpeta_refinanciamiento(
+        base_dir=base_dir,
+        semana=semana,
+        vendedor=vendedor,
+        cliente=cliente
+    )
+    carpeta.mkdir(parents=True, exist_ok=True)
+    rutas = {}
+
+    for extension, contenido in archivos.items():
+        extension_limpia = str(extension).lower().lstrip(".")
+        ruta = carpeta / nombre_archivo_refinanciamiento(
+            cliente,
+            semana,
+            extension_limpia
+        )
+        ruta.write_bytes(contenido)
+        rutas[extension_limpia] = ruta
+
+    return rutas
 
 
 def extraer_fecha_edad_desde_rfc(
@@ -170,6 +215,7 @@ def extraer_fecha_edad_desde_rfc(
 def dataframe_facturas_vacio(filas: int = 5) -> pd.DataFrame:
     return pd.DataFrame([
         {
+            "INCLUIR": False,
             "FACT": "",
             "VTA": 0.0,
             "SALDO": 0.0,
@@ -181,6 +227,26 @@ def dataframe_facturas_vacio(filas: int = 5) -> pd.DataFrame:
     ])
 
 
+def preparar_facturas_desde_bd(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return dataframe_facturas_vacio(0)
+
+    facturas = df.rename(columns={
+        "fact": "FACT",
+        "vta": "VTA",
+        "saldo": "SALDO",
+        "venta_id": "VENTA_ID"
+    }).copy()
+    facturas["ABONO"] = 0.0
+    facturas["EN COBRO"] = ""
+    facturas["QNAS TOMADAS A CUENTA"] = 0
+    facturas["INCLUIR"] = True
+
+    calculadas = calcular_facturas_refinanciamiento(facturas)
+    calculadas["INCLUIR"] = calculadas["PUEDE REFINANCIAR"].eq("SI")
+    return calculadas
+
+
 def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=COLUMNAS_MANUALES + COLUMNAS_CALCULADAS)
@@ -189,7 +255,12 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
 
     for columna in COLUMNAS_MANUALES:
         if columna not in resultado:
-            resultado[columna] = "" if columna in ["FACT", "EN COBRO"] else 0.0
+            if columna == "INCLUIR":
+                resultado[columna] = pd.NA
+            else:
+                resultado[columna] = (
+                    "" if columna in ["FACT", "EN COBRO"] else 0.0
+                )
 
     columnas_numericas = [
         "VTA",
@@ -206,11 +277,11 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
         resultado.loc[tiene_venta, "VTA"]
         - resultado.loc[tiene_venta, "SALDO"]
     ).round(2)
-    resultado["ABONO DE QUINCENAS"] = (
+    resultado["ABONO DE QUINCENAS CONS"] = (
         resultado["QNAS TOMADAS A CUENTA"] * resultado["ABONO"]
     ).round(2)
     resultado["SALDO PENDIENTE"] = (
-        resultado["SALDO"] - resultado["ABONO DE QUINCENAS"]
+        resultado["SALDO"] - resultado["ABONO DE QUINCENAS CONS"]
     ).round(2)
     resultado["PORCENTAJE PAGADO"] = 0.0
     resultado.loc[tiene_venta, "PORCENTAJE PAGADO"] = (
@@ -230,21 +301,35 @@ def calcular_facturas_refinanciamiento(df: pd.DataFrame) -> pd.DataFrame:
     resultado.loc[fila_activa, "PUEDE REFINANCIAR"] = resultado.loc[
         fila_activa,
         "PORCENTAJE PAGADO"
-    ].map(lambda porcentaje: "SI" if porcentaje >= 0.39 else "NO")
+    ].map(lambda porcentaje: "SI" if porcentaje >= 0.40 else "NO")
+    resultado["ESTADO"] = ""
+    resultado.loc[fila_activa, "ESTADO"] = resultado.loc[
+        fila_activa,
+        "PUEDE REFINANCIAR"
+    ].map({"SI": "APTA", "NO": "NO APTA"})
+
+    incluir_original = resultado["INCLUIR"]
+    incluir_default = resultado["PUEDE REFINANCIAR"].eq("SI")
+    resultado["INCLUIR"] = incluir_original.where(
+        incluir_original.notna(),
+        incluir_default
+    ).map(lambda valor: bool(valor) if not pd.isna(valor) else False)
 
     columnas_salida = [
+        "INCLUIR",
         "FACT",
         "VTA",
         "PAGADO",
         "SALDO",
         "QNAS TOMADAS A CUENTA",
         "ABONO",
-        "EN COBRO",
-        "ABONO DE QUINCENAS",
+        "ABONO DE QUINCENAS CONS",
         "SALDO PENDIENTE",
+        "EN COBRO",
         "PORCENTAJE PAGADO",
         "REFINANCIAMIENTO",
-        "PUEDE REFINANCIAR"
+        "PUEDE REFINANCIAR",
+        "ESTADO"
     ]
     return resultado[columnas_salida]
 
@@ -274,6 +359,7 @@ def calcular_resumen_refinanciamiento(
     aumento_descuento: float
 ) -> dict:
     facturas = calcular_facturas_refinanciamiento(df)
+    facturas = facturas[facturas["INCLUIR"]].copy()
     aumento_descuento = convertir_numero(aumento_descuento)
 
     def total(columna: str) -> float:
@@ -281,10 +367,7 @@ def calcular_resumen_refinanciamiento(
             return 0.0
         return round(float(facturas[columna].sum()), 2)
 
-    facturas_refinanciables = facturas[
-        facturas["PUEDE REFINANCIAR"] == "SI"
-    ]
-    abono_ref = round(float(facturas_refinanciables["ABONO"].sum()), 2)
+    abono_ref = total("ABONO")
     abono_antes = total("ABONO")
     total_abono_nuevo = round(abono_ref + aumento_descuento, 2)
     total_saldo_pendiente = total("SALDO PENDIENTE")
@@ -309,7 +392,7 @@ def calcular_resumen_refinanciamiento(
         "total_pagado": total("PAGADO"),
         "total_saldo": total("SALDO"),
         "total_abono": abono_antes,
-        "total_abono_quincenas": total("ABONO DE QUINCENAS"),
+        "total_abono_quincenas": total("ABONO DE QUINCENAS CONS"),
         "total_saldo_pendiente": total_saldo_pendiente,
         "total_refinanciamiento": total("REFINANCIAMIENTO"),
         "abono_ref": abono_ref,
@@ -355,18 +438,20 @@ def generar_excel_refinanciamiento(
     porcentaje = "0%"
 
     columnas_facturas = [
+        "INCLUIR",
         "FACT",
         "VTA",
         "PAGADO",
         "SALDO",
         "QNAS TOMADAS A CUENTA",
         "ABONO",
-        "EN COBRO",
-        "ABONO DE QUINCENAS",
+        "ABONO DE QUINCENAS CONS",
         "SALDO PENDIENTE",
+        "EN COBRO",
         "PORCENTAJE PAGADO",
         "REFINANCIAMIENTO",
-        "PUEDE REFINANCIAR"
+        "PUEDE REFINANCIAR",
+        "ESTADO"
     ]
     ws_facturas.append(columnas_facturas)
 
@@ -383,7 +468,7 @@ def generar_excel_refinanciamiento(
         "PAGADO",
         "SALDO",
         "ABONO",
-        "ABONO DE QUINCENAS",
+        "ABONO DE QUINCENAS CONS",
         "SALDO PENDIENTE",
         "REFINANCIAMIENTO"
     }
@@ -482,4 +567,127 @@ def generar_excel_refinanciamiento(
 
     salida = BytesIO()
     wb.save(salida)
+    return salida.getvalue()
+
+
+def _valor_json(valor):
+    if pd.isna(valor):
+        return None
+    if isinstance(valor, (date, datetime)):
+        return valor.isoformat()
+    if hasattr(valor, "item"):
+        return valor.item()
+    return valor
+
+
+def generar_json_refinanciamiento(
+    facturas: pd.DataFrame,
+    resumen: dict,
+    datos_cliente: dict
+) -> bytes:
+    facturas_calculadas = filtrar_facturas_capturadas(facturas)
+    payload = {
+        "datos_cliente": {
+            clave: _valor_json(valor)
+            for clave, valor in datos_cliente.items()
+        },
+        "facturas": [
+            {
+                clave: _valor_json(valor)
+                for clave, valor in fila.items()
+            }
+            for fila in facturas_calculadas.to_dict(orient="records")
+        ],
+        "resumen": {
+            clave: valor
+            for clave, valor in resumen.items()
+            if clave != "simulacion"
+        },
+        "simulacion": resumen["simulacion"]
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2
+    ).encode("utf-8")
+
+
+def generar_pdf_refinanciamiento(
+    facturas: pd.DataFrame,
+    resumen: dict,
+    datos_cliente: dict
+) -> bytes:
+    salida = BytesIO()
+    documento = SimpleDocTemplate(
+        salida,
+        pagesize=landscape(letter),
+        rightMargin=0.35 * inch,
+        leftMargin=0.35 * inch,
+        topMargin=0.35 * inch,
+        bottomMargin=0.35 * inch
+    )
+    estilos = getSampleStyleSheet()
+    elementos = [
+        Paragraph("Resumen de refinanciamiento", estilos["Title"]),
+        Paragraph(
+            (
+                f"Cliente: {datos_cliente.get('cliente', '')} | "
+                f"RFC: {datos_cliente.get('rfc_nac', '')} | "
+                f"Vendedor: {datos_cliente.get('vendedor', '')} | "
+                f"Semana: {datos_cliente.get('semana', '')}"
+            ),
+            estilos["Normal"]
+        ),
+        Spacer(1, 10)
+    ]
+
+    facturas_calculadas = filtrar_facturas_capturadas(facturas)
+    encabezados = [
+        "INCLUIR", "FACT", "VTA", "PAGADO", "SALDO", "QNAS",
+        "ABONO", "SALDO PEND.", "% PAGADO", "ESTADO"
+    ]
+    filas = [encabezados]
+    for _, factura in facturas_calculadas.iterrows():
+        filas.append([
+            "SI" if factura["INCLUIR"] else "NO",
+            str(factura["FACT"]),
+            f"${factura['VTA']:,.2f}",
+            f"${factura['PAGADO']:,.2f}",
+            f"${factura['SALDO']:,.2f}",
+            f"{factura['QNAS TOMADAS A CUENTA']:,.0f}",
+            f"${factura['ABONO']:,.2f}",
+            f"${factura['SALDO PENDIENTE']:,.2f}",
+            f"{factura['PORCENTAJE PAGADO']:.0%}",
+            factura["ESTADO"]
+        ])
+
+    tabla_facturas = Table(filas, repeatRows=1)
+    tabla_facturas.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("ALIGN", (2, 1), (-2, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE")
+    ]))
+    elementos.extend([tabla_facturas, Spacer(1, 12)])
+
+    resumen_filas = [
+        ["Concepto", "Importe"],
+        ["Total VTA", f"${resumen['total_vta']:,.2f}"],
+        ["Total pagado", f"${resumen['total_pagado']:,.2f}"],
+        ["Saldo pendiente", f"${resumen['total_saldo_pendiente']:,.2f}"],
+        ["Descuento nuevo", f"${resumen['total_abono_nuevo']:,.2f}"]
+    ]
+    tabla_resumen = Table(resumen_filas, colWidths=[2.3 * inch, 1.5 * inch])
+    tabla_resumen.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("ALIGN", (1, 1), (1, -1), "RIGHT")
+    ]))
+    elementos.append(tabla_resumen)
+    documento.build(elementos)
     return salida.getvalue()

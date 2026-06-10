@@ -10,17 +10,26 @@ from services.calculadora import calcular_revision_talon
 from services.generador_excel import generar_excel_revision
 from services.generador_pdf import generar_pdf_revision
 from services.graph_storage import subir_revision_a_graph, GraphStorageError
+from services.refinanciamiento_db import (
+    RefinanciamientoDatabaseError,
+    buscar_clientes,
+    cargar_facturas_cliente,
+    crear_engine_refinanciamiento,
+    obtener_database_url
+)
+from ui.refinanciamiento_tab import render_refinanciamiento
 from utils.refinanciamiento import (
-    COLUMNAS_MANUALES,
     OUTPUT_REFINANCIAMIENTO_DIR,
     calcular_facturas_refinanciamiento,
     calcular_resumen_refinanciamiento,
-    dataframe_facturas_vacio,
     dataframe_simulacion,
     extraer_fecha_edad_desde_rfc,
     generar_excel_refinanciamiento,
-    guardar_excel_refinanciamiento,
-    nombre_archivo_refinanciamiento
+    generar_json_refinanciamiento,
+    generar_pdf_refinanciamiento,
+    guardar_archivos_refinanciamiento,
+    nombre_archivo_refinanciamiento,
+    preparar_facturas_desde_bd
 )
 
 
@@ -56,6 +65,27 @@ CODIGOS_FORMATO = [
 
 Path("uploads").mkdir(exist_ok=True)
 Path("output").mkdir(exist_ok=True)
+
+
+@st.cache_resource
+def obtener_engine_refinanciamiento(database_url: str):
+    return crear_engine_refinanciamiento(database_url)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def buscar_clientes_cache(database_url: str, busqueda: str) -> pd.DataFrame:
+    return buscar_clientes(
+        obtener_engine_refinanciamiento(database_url),
+        busqueda
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cargar_facturas_cache(database_url: str, cliente_id) -> pd.DataFrame:
+    return cargar_facturas_cliente(
+        obtener_engine_refinanciamiento(database_url),
+        cliente_id
+    )
 
 
 def formato_moneda(valor: float) -> str:
@@ -644,20 +674,26 @@ def render_cuentas_terminadas(
 def limpiar_estado_refinanciamiento():
     claves = [
         "ref_fecha",
-        "ref_cliente",
-        "ref_rfc_nac",
         "ref_vendedor",
         "ref_semana",
         "ref_quinquenio",
         "ref_aumento_descuento",
         "ref_forzar_1900",
-        "refi_facturas_input",
+        "ref_busqueda_cliente",
+        "ref_resultados_clientes",
+        "ref_cliente_seleccion",
+        "ref_cliente_actual",
+        "refi_facturas_db",
         "refi_facturas_editor",
-        "ref_facturas"
+        "refi_editor_version"
     ]
 
     for clave in claves:
         st.session_state.pop(clave, None)
+
+    for clave in list(st.session_state):
+        if clave.startswith("refi_facturas_editor_"):
+            st.session_state.pop(clave, None)
 
     st.session_state["refi_limpieza_confirmada"] = True
 
@@ -1445,6 +1481,22 @@ with tab_lote:
 
 
 with tab_refinanciamiento:
+    try:
+        database_url_refinanciamiento = obtener_database_url(st.secrets)
+    except Exception:
+        database_url_refinanciamiento = obtener_database_url()
+
+    render_refinanciamiento(
+        PROMOTORES,
+        formato_moneda,
+        limpiar_estado_refinanciamiento,
+        database_url_refinanciamiento,
+        buscar_clientes_cache,
+        cargar_facturas_cache
+    )
+
+
+if False:
     st.markdown("## Calculadora de refinanciamiento")
     st.caption(
         "Captura las facturas actuales, valida el porcentaje pagado y simula "

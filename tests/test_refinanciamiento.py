@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import json
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -15,8 +16,12 @@ from utils.refinanciamiento import (
     dataframe_facturas_vacio,
     extraer_fecha_edad_desde_rfc,
     generar_excel_refinanciamiento,
+    generar_json_refinanciamiento,
+    generar_pdf_refinanciamiento,
+    guardar_archivos_refinanciamiento,
     guardar_excel_refinanciamiento,
     nombre_archivo_refinanciamiento,
+    preparar_facturas_desde_bd,
     slug_folder_name,
     to_number
 )
@@ -95,7 +100,10 @@ class RefinanciamientoTest(unittest.TestCase):
             "EN COBRO": ""
         }]))
 
-        self.assertEqual(facturas.loc[0, "ABONO DE QUINCENAS"], 100)
+        self.assertEqual(
+            facturas.loc[0, "ABONO DE QUINCENAS CONS"],
+            100
+        )
         self.assertEqual(facturas.loc[0, "PAGADO"], 0)
         self.assertEqual(facturas.loc[0, "SALDO PENDIENTE"], 400)
         self.assertEqual(facturas.loc[0, "PORCENTAJE PAGADO"], 0)
@@ -121,8 +129,14 @@ class RefinanciamientoTest(unittest.TestCase):
             }
         ]))
 
-        self.assertEqual(facturas.loc[0, "ABONO DE QUINCENAS"], 0)
-        self.assertEqual(facturas.loc[1, "ABONO DE QUINCENAS"], 0)
+        self.assertEqual(
+            facturas.loc[0, "ABONO DE QUINCENAS CONS"],
+            0
+        )
+        self.assertEqual(
+            facturas.loc[1, "ABONO DE QUINCENAS CONS"],
+            0
+        )
         self.assertEqual(facturas.loc[0, "SALDO PENDIENTE"], 600)
         self.assertEqual(facturas.loc[1, "SALDO PENDIENTE"], 600)
 
@@ -130,6 +144,7 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(
             COLUMNAS_MANUALES,
             [
+                "INCLUIR",
                 "FACT",
                 "VTA",
                 "SALDO",
@@ -179,7 +194,7 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "SI",
                 "VTA": 1000,
-                "SALDO": 610,
+                "SALDO": 600,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 100,
                 "EN COBRO": ""
@@ -187,7 +202,7 @@ class RefinanciamientoTest(unittest.TestCase):
             {
                 "FACT": "NO",
                 "VTA": 1000,
-                "SALDO": 611,
+                "SALDO": 601,
                 "QNAS TOMADAS A CUENTA": 0,
                 "ABONO": 200,
                 "EN COBRO": ""
@@ -199,7 +214,7 @@ class RefinanciamientoTest(unittest.TestCase):
         self.assertEqual(resultado.loc[0, "PUEDE REFINANCIAR"], "SI")
         self.assertEqual(resultado.loc[1, "PUEDE REFINANCIAR"], "NO")
         self.assertEqual(resumen["abono_ref"], 100)
-        self.assertEqual(resumen["abono_antes"], 300)
+        self.assertEqual(resumen["abono_antes"], 100)
         self.assertEqual(resumen["total_abono_nuevo"], 150)
 
     def test_pagado_manual_se_ignora_y_se_recalcula(self):
@@ -244,9 +259,10 @@ class RefinanciamientoTest(unittest.TestCase):
             workbook.sheetnames,
             ["Facturas", "Resumen Refinanciamiento"]
         )
-        self.assertEqual(workbook["Facturas"]["A2"].value, "12546")
-        self.assertEqual(workbook["Facturas"]["C2"].value, 42117.20)
-        self.assertEqual(workbook["Facturas"]["J2"].number_format, "0%")
+        self.assertTrue(workbook["Facturas"]["A2"].value)
+        self.assertEqual(workbook["Facturas"]["B2"].value, "12546")
+        self.assertEqual(workbook["Facturas"]["D2"].value, 42117.20)
+        self.assertEqual(workbook["Facturas"]["K2"].number_format, "0%")
         self.assertEqual(
             workbook["Resumen Refinanciamiento"]["B3"].value,
             23
@@ -308,7 +324,7 @@ class RefinanciamientoTest(unittest.TestCase):
                 / "SEM_23"
                 / "Juan Manuel"
                 / "JUAN CARLOS NAVA CASTRO"
-                / "refinanciamiento_JUAN_CARLOS_NAVA_CASTRO_SEM_23.xlsx"
+                / "refinanciamiento.xlsx"
             )
 
             self.assertEqual(ruta, esperada)
@@ -335,8 +351,85 @@ class RefinanciamientoTest(unittest.TestCase):
         )
         self.assertEqual(
             nombre_archivo_refinanciamiento("", 9),
-            "refinanciamiento_CLIENTE_SIN_NOMBRE_SEM_09.xlsx"
+            "refinanciamiento.xlsx"
         )
+
+    def test_prepara_facturas_bd_y_selecciona_solo_aptas(self):
+        resultado = preparar_facturas_desde_bd(pd.DataFrame([
+            {
+                "venta_id": 1,
+                "fact": "APTA",
+                "vta": 1000,
+                "saldo": 600
+            },
+            {
+                "venta_id": 2,
+                "fact": "NO APTA",
+                "vta": 1000,
+                "saldo": 601
+            }
+        ]))
+
+        self.assertTrue(resultado.loc[0, "INCLUIR"])
+        self.assertFalse(resultado.loc[1, "INCLUIR"])
+        self.assertEqual(resultado.loc[0, "ESTADO"], "APTA")
+        self.assertEqual(resultado.loc[1, "ESTADO"], "NO APTA")
+
+    def test_resumen_solo_considera_facturas_incluidas(self):
+        facturas = self.facturas.head(2).copy()
+        facturas["INCLUIR"] = [True, False]
+
+        resumen = calcular_resumen_refinanciamiento(facturas, 0)
+
+        self.assertEqual(resumen["total_vta"], 58564)
+        self.assertEqual(resumen["total_pagado"], 42117.20)
+        self.assertEqual(resumen["abono_ref"], 813.39)
+
+    def test_genera_pdf_json_y_guarda_paquete(self):
+        facturas = calcular_facturas_refinanciamiento(
+            self.facturas.head(1)
+        )
+        resumen = calcular_resumen_refinanciamiento(facturas, 0)
+        datos_cliente = {
+            "fecha": date(2026, 6, 10),
+            "semana": 24,
+            "vendedor": "Juan Manuel",
+            "cliente": "CLIENTE PRUEBA",
+            "rfc_nac": "J860901UT6",
+            "fecha_nacimiento": date(1986, 9, 1),
+            "edad": 39,
+            "quinquenio": 40
+        }
+        pdf = generar_pdf_refinanciamiento(
+            facturas,
+            resumen,
+            datos_cliente
+        )
+        json_data = generar_json_refinanciamiento(
+            facturas,
+            resumen,
+            datos_cliente
+        )
+
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertEqual(
+            json.loads(json_data)["datos_cliente"]["cliente"],
+            "CLIENTE PRUEBA"
+        )
+
+        with tempfile.TemporaryDirectory() as carpeta_temporal:
+            rutas = guardar_archivos_refinanciamiento(
+                {"xlsx": b"xlsx", "pdf": pdf, "json": json_data},
+                carpeta_temporal,
+                24,
+                "Juan Manuel",
+                "CLIENTE PRUEBA"
+            )
+            self.assertEqual(
+                set(rutas),
+                {"xlsx", "pdf", "json"}
+            )
+            self.assertTrue(all(ruta.exists() for ruta in rutas.values()))
 
 
 if __name__ == "__main__":
